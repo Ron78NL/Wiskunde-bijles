@@ -183,13 +183,14 @@ with st.sidebar:
         st.rerun()
             
     st.markdown("---")
-    st.subheader("🛠️ Onderwerp & Hulpmiddel")
+    st.subheader("🛠️ Modus & Hulpmiddel")
     
-    # Keuzemenu voor het 2de jaar ASO domein
+    # Keuzemenu inclusief de handleiding als optie
     current_topic = st.selectbox(
-        "Kies het huidige onderwerp:",
+        "Kies wat je wilt doen:",
         [
-            "Geen hulpmiddelen (Pure theorie / Toets)",
+            "💬 Chat met Bijlesleraar",
+            "📖 Hoe werkt het? (Handleiding)",
             "Functies & Grafieken (Rechten / Parabolen)",
             "Statistiek & Centrummaten",
             "Procenten & Verhoudingen (BTW / Prijs)",
@@ -197,7 +198,7 @@ with st.sidebar:
         ]
     )
 
-    # Dynamische weergave van de tool die past bij het gekozen onderwerp
+    # Dynamische weergave van de tool of handleiding
     if current_topic == "Functies & Grafieken (Rechten / Parabolen)":
         with st.expander("📈 Grafiek Generator", expanded=True):
             figure_type = st.selectbox("Kies een figuur:", ["Rechte lijn", "Parabool ($ax^2+bx+c$)"])
@@ -287,55 +288,85 @@ with st.sidebar:
         st.session_state.active_document = None
         st.rerun()
 
-# Toon de chatgeschiedenis
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        content = msg["content"]
-        if isinstance(content, list):
-            for part in content:
-                if part.get("type") == "text":
-                    st.write(part["text"])
-        elif isinstance(content, dict) and content.get("type") == "image":
-            st.image(content["data"], caption=content.get("caption"))
-        else:
-            st.write(content)
+# Hoofdscherm logica: Toon de handleiding als die is geselecteerd, anders de chat
+if current_topic == "📖 Hoe werkt het? (Handleiding)":
+    st.title("📖 Hoe werkt deze Wiskundebijles-app?")
+    st.markdown("""
+    Welkom! Deze app is jouw persoonlijke digitale bijlesleraar. Het is nadrukkelijk **geen antwoordmachine** die je huiswerk zomaar overneemt, maar een hulpmiddel om te leren en te controleren.
 
-# Chat invoer onderaan
-if prompt := st.chat_input("Schrijf hier je vraag of je poging..."):
-    content_parts = []
-    if st.session_state.active_document:
-        doc = st.session_state.active_document
-        if doc["type"].startswith("image/"):
-            content_parts.append({
-                "type": "image",
-                "source": {"type": "base64", "media_type": doc["type"], "data": doc["data"]}
-            })
-        elif doc["type"] == "application/pdf":
-            content_parts.append({
-                "type": "document",
-                "source": {"type": "base64", "media_type": "application/pdf", "data": doc["data"]}
-            })
-    content_parts.append({"type": "text", "text": prompt})
-    st.session_state.messages.append({"role": "user", "content": content_parts})
-    with st.chat_message("user"):
-        if st.session_state.active_document:
-            st.caption(f"📎 Bijlage: {st.session_state.active_document['name']}")
-        st.write(prompt)
-    with st.spinner("De bijlesleraar denkt na..."):
-        api_messages = []
-        for i, m in enumerate(st.session_state.messages):
-            role = m["role"]
-            content = m["content"]
+    ---
+
+    ### 🎯 Wat is de opzet?
+    * **Zelf nadenken staat centraal:** De AI-bijlesleraar geeft je nooit zomaar het eindantwoord. Die helpt je op weg door slimme vragen te stellen en je stapsgewijs te begeleiden.
+    * **Geen rekenfouten:** Alle rekentools en grafieken worden berekend door strakke Python-logica. Wat daaruit komt, klopt altijd exact.
+
+    ---
+
+    ### 🛠️ Hoe gebruik je de tools?
+    In de zijbalk kun je het **huidige onderwerp** kiezen waar je mee bezig bent. De app toont dan automatisch de tool die daarbij hoort:
+    1. **Functies & Grafieken:** Controleer rechten en parabolen.
+    2. **Statistiek & Centrummaten:** Bereken snel het gemiddelde, de mediaan en de modus.
+    3. **Procenten & Prijscontrole:** Handig voor BTW-berekeningen en procentuele verandering.
+    4. **Algebra & Merkwaardige Producten:** Bekijk de belangrijkste formules als geheugensteuntje.
+
+    ---
+
+    ### 🚀 Stappenplan voor je huiswerk:
+    1. **Upload je taak:** Maak een foto van je oefeningenblad of upload een PDF via de zijbalk.
+    2. **Typ je poging:** Zet in de chat wat je al geprobeerd hebt.
+    3. **Check en leer:** Gebruik de rekentools in de zijbalk om je eigen antwoorden te controleren.
+    4. **Test je kennis:** Klik in de zijbalk op de knop om een korte oefentoets te maken!
+    """)
+else:
+    # Toon de chatgeschiedenis
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            content = msg["content"]
             if isinstance(content, list):
-                texts = [p["text"] for p in content if p.get("type") == "text"]
-                api_messages.append({"role": role, "content": " ".join(texts)})
+                for part in content:
+                    if part.get("type") == "text":
+                        st.write(part["text"])
             elif isinstance(content, dict) and content.get("type") == "image":
-                api_messages.append({"role": role, "content": f"[Afbeelding getoond: {content.get('caption')}]"})
+                st.image(content["data"], caption=content.get("caption"))
             else:
-                api_messages.append({"role": role, "content": content})
-        api_messages[-1]["content"] = content_parts
-        response_text = call_claude(api_messages)
-    with st.chat_message("assistant"):
-        st.write(response_text)
-    st.session_state.messages.append({"role": "assistant", "content": response_text})
-    st.rerun()
+                st.write(content)
+
+    # Chat invoer onderaan
+    if prompt := st.chat_input("Schrijf hier je vraag of je poging..."):
+        content_parts = []
+        if st.session_state.active_document:
+            doc = st.session_state.active_document
+            if doc["type"].startswith("image/"):
+                content_parts.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": doc["type"], "data": doc["data"]}
+                })
+            elif doc["type"] == "application/pdf":
+                content_parts.append({
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": "application/pdf", "data": doc["data"]}
+                })
+        content_parts.append({"type": "text", "text": prompt})
+        st.session_state.messages.append({"role": "user", "content": content_parts})
+        with st.chat_message("user"):
+            if st.session_state.active_document:
+                st.caption(f"📎 Bijlage: {st.session_state.active_document['name']}")
+            st.write(prompt)
+        with st.spinner("De bijlesleraar denkt na..."):
+            api_messages = []
+            for i, m in enumerate(st.session_state.messages):
+                role = m["role"]
+                content = m["content"]
+                if isinstance(content, list):
+                    texts = [p["text"] for p in content if p.get("type") == "text"]
+                    api_messages.append({"role": role, "content": " ".join(texts)})
+                elif isinstance(content, dict) and content.get("type") == "image":
+                    api_messages.append({"role": role, "content": f"[Afbeelding getoond: {content.get('caption')}]"})
+                else:
+                    api_messages.append({"role": role, "content": content})
+            api_messages[-1]["content"] = content_parts
+            response_text = call_claude(api_messages)
+        with st.chat_message("assistant"):
+            st.write(response_text)
+        st.session_state.messages.append({"role": "assistant", "content": response_text})
+        st.rerun()
