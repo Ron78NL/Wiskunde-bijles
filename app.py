@@ -29,12 +29,14 @@ def load_persistent_groei():
                 data["weak_points"] = []
             if "strong_points" not in data:
                 data["strong_points"] = []
+            if "topics_covered" not in data:
+                data["topics_covered"] = []
             return data
         except Exception:
             pass
     return {
         "total_questions": 0, 
-        "topics_practiced": [], 
+        "topics_covered": [], 
         "weak_points": [],
         "strong_points": [],
         "growth_summary": "Nog geen historische analyse beschikbaar. Begin met oefenen en analyseer de voortgang."
@@ -202,7 +204,7 @@ with st.sidebar:
             "💬 Chat met Bijlesleraar",
             "📖 Hoe werkt het? (Handleiding)",
             "🎯 Adaptieve Foutenbank-toets",
-            "📈 Permanente Groei- & Sterke Punten-analyse",
+            "📈 Permanente Groei- & Methodiek-analyse",
             "Functies & Grafieken (Rechten / Parabolen)",
             "Statistiek & Centrummaten",
             "Procenten & Verhoudingen (BTW / Prijs)",
@@ -276,8 +278,9 @@ with st.sidebar:
             st.latex(r"(a + b)(a - b) = a^2 - b^2")
 
     st.markdown("---")
-    st.subheader("🌟 Voortgang & Profiel")
+    st.subheader("🌟 Permanente Profiel")
     st.metric(label="Totaal gestelde vragen", value=groei_data.get("total_questions", 0))
+    st.markdown(f"**Behandelde onderwerpen:** {len(groei_data.get('topics_covered', []))}")
     st.markdown(f"**Sterke punten:** {len(groei_data.get('strong_points', []))}")
     st.markdown(f"**Aandachtspunten:** {len(groei_data.get('weak_points', []))}")
 
@@ -292,10 +295,10 @@ with st.sidebar:
 # Hoofdscherm logica
 if current_topic == "📖 Hoe werkt het? (Handleiding)":
     st.title("📖 Handleiding")
-    st.markdown("Deze app is streng gefocust op zelfstandig nadenken, het registreren van sterke vaardigheden en het wegwerken van feitelijke tekortkomingen in het 2de jaar ASO.")
+    st.markdown("Deze app bewaart de behandelde lesmethodes, sterke vaardigheden en aandachtspunten permanent in een lokaal profiel.")
 elif current_topic == "🎯 Adaptieve Foutenbank-toets":
     st.title("🎯 Adaptieve Foutenbank-toets")
-    st.markdown("Deze toets is gebaseerd op de geregistreerde zwakke punten uit eerdere sessies.")
+    st.markdown("Deze toets is gebaseerd op de opgeslagen zwakke punten en methodieken uit eerdere sessies.")
     
     weak_pts = groei_data.get("weak_points", [])
     if weak_pts:
@@ -305,33 +308,38 @@ elif current_topic == "🎯 Adaptieve Foutenbank-toets":
 
     if st.button("Genereer Foutenbank-toets nu"):
         with st.spinner("De coach stelt een gerichte toets samen..."):
-            prompt_toets = f"Genereer een gerichte oefentoets van 3 pittige vragen voor een leerling in het 2de jaar ASO, gebaseerd op deze bekende zwakke punten: {weak_pts}. Geef geen antwoorden, daag uit tot stappen."
+            prompt_toets = f"Genereer een gerichte oefentoets van 3 pittige vragen voor een leerling in het 2de jaar ASO, gebaseerd op deze bekende zwakke punten: {weak_pts}. Volg exact de behandelde methodiek."
             res = call_claude([{"role": "user", "content": prompt_toets}])
             st.session_state.messages.append({"role": "assistant", "content": res})
             st.success("Toets gegenereerd! Schakel terug naar 'Chat met Bijlesleraar' om te beginnen.")
-elif current_topic == "📈 Permanente Groei- & Sterke Punten-analyse":
-    st.title("📈 Permanente Groei- & Sterke Punten-analyse")
-    st.markdown("Overzicht van zowel de sterke vaardigheden als de leerpunten van de leerling.")
+elif current_topic == "📈 Permanente Groei- & Methodiek-analyse":
+    st.title("📈 Permanente Groei- & Methodiek-analyse")
+    st.markdown("Overzicht van de opgeslagen leerstof, methodieken en voortgang over alle sessies heen.")
     
+    st.subheader("📚 Behandelde Onderwerpen & Methodieken")
+    topics = groei_data.get("topics_covered", [])
+    if topics:
+        for t in topics:
+            st.markdown(f"- {t}")
+    else:
+        st.write("Nog geen onderwerpen vastgelegd.")
+
     st.subheader("💪 Geregistreerde Sterke Punten")
     strongs = groei_data.get("strong_points", [])
     if strongs:
         for s in strongs:
             st.markdown(f"- {s}")
     else:
-        st.write("Nog geen sterke punten expliciet vastgelegd. Laat Claude een analyse draaien om ze te identificeren.")
+        st.write("Nog geen sterke punten vastgelegd.")
 
     st.subheader("📌 Uitgebreide Voortgangsrapportage")
     st.info(groei_data.get("growth_summary", "Nog geen analyse beschikbaar."))
     
-    if st.button("Genereer volledige analyse (Sterke & Zwakke punten)"):
-        with st.spinner("De coach analyseert de sterke punten en leercurve..."):
+    if st.button("Genereer bijgewerkte analyse"):
+        with st.spinner("De coach analyseert het permanente profiel..."):
             analysis_prompt = (
-                "Analyseer de communicatie tot nu toe grondig en geef een professionele voortgangsrapportage "
-                "voor een leerling in het 2de jaar ASO. Benoem expliciet:\n"
-                "1. Wat gaat er al heel erg goed (Sterke punten)?\n"
-                "2. Waar liggen nog hardnekkige valkuilen (Zwakke punten)?\n"
-                "3. Concreet advies voor de volgende stappen."
+                "Analyseer de historisch opgeslagen gegevens van de leerling in het 2de jaar ASO en geef een professionele voortgangsrapportage "
+                "waarin de juiste methodieken, sterke punten en valkuilen worden vastgelegd."
             )
             res = call_claude([{"role": "user", "content": analysis_prompt}])
             groei_data["growth_summary"] = res
@@ -353,6 +361,12 @@ else:
 
     if prompt := st.chat_input("Schrijf hier je vraag of je uitwerking..."):
         groei_data["total_questions"] = groei_data.get("total_questions", 0) + 1
+        
+        # Voeg eventueel bestandsnamen toe aan de behandelde onderwerpen/methodiek
+        for doc in st.session_state.active_documents:
+            if doc["name"] not in groei_data["topics_covered"]:
+                groei_data["topics_covered"].append(doc["name"])
+                
         save_persistent_groei(groei_data)
 
         content_parts = []
@@ -377,7 +391,7 @@ else:
                 st.caption(f"📎 Bijlagen: {names}")
             st.write(prompt)
             
-        with st.spinner("De coach analyseert je antwoord..."):
+        with st.spinner("De coach analyseert je uitwerking en methode..."):
             api_messages = []
             for i, m in enumerate(st.session_state.messages):
                 role = m["role"]
