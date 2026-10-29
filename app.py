@@ -19,6 +19,21 @@ st.set_page_config(
 ROOT = Path(__file__).resolve().parent
 MODEL = "claude-haiku-5-5"
 API_URL = "https://api.anthropic.com/v1/messages"
+GROEI_FILE = ROOT / "student_groei.json"
+
+def load_persistent_groei():
+    if GROEI_FILE.exists():
+        try:
+            return json.loads(GROEI_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"total_questions": 0, "topics_practiced": [], "growth_summary": "Nog geen historische analyse beschikbaar. Begin met oefenen!"}
+
+def save_persistent_groei(data):
+    try:
+        GROEI_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+    except Exception:
+        pass
 
 def load_env():
     env_file = ROOT / ".env"
@@ -93,7 +108,6 @@ def call_claude(messages):
 def plot_linear(a, b):
     x = np.linspace(-10, 10, 400)
     y = a * x + b
-    
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.plot(x, y, label=f'$y = {a}x + {b}$')
     ax.axhline(0, color='black', linewidth=1)
@@ -101,9 +115,6 @@ def plot_linear(a, b):
     ax.grid(True, linestyle='--', alpha=0.7)
     ax.legend()
     ax.set_title(f"Grafiek van y = {a}x + {b}")
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
-    
     buf = BytesIO()
     fig.savefig(buf, format='png')
     buf.seek(0)
@@ -113,7 +124,6 @@ def plot_linear(a, b):
 def plot_parabola(a, b, c):
     x = np.linspace(-10, 10, 400)
     y = a * x**2 + b * x + c
-    
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.plot(x, y, label=f'$y = {a}x^2 + {b}x + {c}$')
     ax.axhline(0, color='black', linewidth=1)
@@ -121,9 +131,6 @@ def plot_parabola(a, b, c):
     ax.grid(True, linestyle='--', alpha=0.7)
     ax.legend()
     ax.set_title(f"Grafiek van y = {a}x² + {b}x + {c}")
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
-    
     buf = BytesIO()
     fig.savefig(buf, format='png')
     buf.seek(0)
@@ -142,7 +149,7 @@ if "messages" not in st.session_state:
 if "active_documents" not in st.session_state:
     st.session_state.active_documents = []
 
-user_messages_count = sum(1 for m in st.session_state.messages if m["role"] == "user")
+groei_data = load_persistent_groei()
 
 with st.sidebar:
     st.header("📂 Oefeningen of Toetsen")
@@ -161,15 +168,12 @@ with st.sidebar:
         for uploaded_file in uploaded_files:
             bytes_data = uploaded_file.getvalue()
             b64_data = base64.b64encode(bytes_data).decode("utf-8")
-            
             (schoolwerk_dir / uploaded_file.name).write_bytes(bytes_data)
-            
             docs_list.append({
                 "name": uploaded_file.name,
                 "type": uploaded_file.type,
                 "data": b64_data
             })
-            
         st.session_state.active_documents = docs_list
         st.success(f"{len(uploaded_files)} bestand(en) geladen.")
     
@@ -181,7 +185,7 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("🎯 Test je kennis")
     if st.button("Maak een mini-oefentoets 📝"):
-        quiz_prompt = "Geef me een korte oefentoets van 3 leuke, gerichte vragen over de leerstof die we tot nu toe besproken hebben, zodat ik kan testen of ik het echt begrijp. Stel de vragen één voor één of alle drie samen!"
+        quiz_prompt = "Geef me een korte oefentoets van 3 leuke, gerichte vragen over de leerstof die we tot nu toe besproken hebben, zodat ik kan testen of ik het echt begrijp."
         st.session_state.messages.append({"role": "user", "content": quiz_prompt})
         
         api_messages = []
@@ -207,6 +211,7 @@ with st.sidebar:
         [
             "💬 Chat met Bijlesleraar",
             "📖 Hoe werkt het? (Handleiding)",
+            "📈 Permanente Groei-analyse",
             "Functies & Grafieken (Rechten / Parabolen)",
             "Statistiek & Centrummaten",
             "Procenten & Verhoudingen (BTW / Prijs)",
@@ -218,7 +223,6 @@ with st.sidebar:
         with st.expander("📈 Grafiek Generator", expanded=True):
             figure_type = st.selectbox("Kies een figuur:", ["Rechte lijn", "Parabool ($ax^2+bx+c$)"])
             if figure_type == "Rechte lijn":
-                st.write("Controleer coëfficiënten voor $y = ax + b$")
                 a_line = st.number_input("Waarde van a:", value=2.0, key="a_line_input")
                 b_line = st.number_input("Waarde van b:", value=1.0, key="b_line_input")
                 if st.button("Genereer lijn"):
@@ -226,7 +230,6 @@ with st.sidebar:
                     st.session_state.messages.append({"role": "assistant", "content": {"type": "image", "data": img_buf, "caption": f"Grafiek van y = {a_line}x + {b_line}"}})
                     st.rerun()
             elif figure_type == "Parabool ($ax^2+bx+c$)":
-                st.write("Controleer coëfficiënten voor $y = ax^2 + bx + c$")
                 a_para = st.number_input("Waarde van a:", value=1.0, key="a_para_input")
                 b_para = st.number_input("Waarde van b:", value=0.0, key="b_para_input")
                 c_para = st.number_input("Waarde van c:", value=0.0, key="c_para_input")
@@ -237,7 +240,6 @@ with st.sidebar:
 
     elif current_topic == "Statistiek & Centrummaten":
         with st.expander("📊 Statistiek Checker", expanded=True):
-            st.write("Controleer centrummaten van een getallenreeks.")
             nums_input = st.text_input("Getallen (komma-gescheiden):", "12, 15, 12, 18, 20")
             if st.button("Bereken statistiek"):
                 try:
@@ -248,7 +250,6 @@ with st.sidebar:
                         counts = Counter(nums)
                         max_count = max(counts.values())
                         modes = [k for k, v in counts.items() if v == max_count]
-                        
                         res_text = (
                             f"**Statistiek Resultaten:**\n"
                             f"- Aantal: {len(nums)}\n"
@@ -258,7 +259,7 @@ with st.sidebar:
                         )
                         st.success(res_text)
                 except Exception:
-                    st.error("Vul geldige getallen in, gescheiden door komma's.")
+                    st.error("Vul geldige getallen in.")
 
     elif current_topic == "Procenten & Verhoudingen (BTW / Prijs)":
         with st.expander("📉 Procenten & Prijscontrole", expanded=True):
@@ -279,21 +280,15 @@ with st.sidebar:
 
     elif current_topic == "Algebra & Merkwaardige Producten":
         with st.expander("🧩 Formules & Geheugensteun", expanded=True):
-            st.write("Belangrijke formules:")
             st.latex(r"(a + b)^2 = a^2 + 2ab + b^2")
             st.latex(r"(a - b)^2 = a^2 - 2ab + b^2")
             st.latex(r"(a + b)(a - b) = a^2 - b^2")
 
     st.markdown("---")
-    st.subheader("🌟 Jouw Groei-meter")
-    st.metric(label="Stappen gezet vandaag", value=user_messages_count)
-    progress_val = min(user_messages_count / 10.0, 1.0)
-    st.progress(progress_val)
-    if user_messages_count < 5:
-        st.success("Goed bezig! Je bent lekker gefocust aan het nadenken. 🚀")
-    else:
-        st.balloons()
-        st.success("Wauw, wat een doorzettingsvermogen! Jij bent echt grotere stappen aan het zetten. ⭐")
+    st.subheader("🌟 Permanente Groei-meter")
+    st.metric(label="Totaal gestelde vragen (historisch)", value=groei_data.get("total_questions", 0))
+    st.progress(min(groei_data.get("total_questions", 0) / 50.0, 1.0))
+    st.success("Voortgang wordt permanent bijgehouden over alle sessies heen. 🚀")
 
     st.markdown("---")
     if st.button("🗑️ Wis hele gesprek (Begin opnieuw)"):
@@ -307,27 +302,21 @@ with st.sidebar:
 if current_topic == "📖 Hoe werkt het? (Handleiding)":
     st.title("📖 Hoe werkt deze Wiskundebijles-app?")
     st.markdown("""
-    Welkom! Deze app is jouw persoonlijke digitale bijlesleraar. Het is nadrukkelijk **geen antwoordmachine** die je huiswerk zomaar overneemt, maar een hulpmiddel om te leren en te controleren.
-
-    ---
-
-    ### 🎯 Wat is de opzet?
-    * **Zelf nadenken staat centraal:** De AI-bijlesleraar geeft je nooit zomaar het eindantwoord. Die helpt je op weg door slimme vragen te stellen en je stapsgewijs te begeleiden.
-    * **Geen rekenfouten:** Alle rekentools en grafieken worden berekend door strakke Python-logica. Wat daaruit komt, klopt altijd exact.
-
-    ---
-
-    ### 🛠️ Hoe gebruik je de tools?
-    In de zijbalk kun je het **huidige onderwerp** kiezen waar je mee bezig bent. De app toont dan automatisch de tool die daarbij hoort.
-
-    ---
-
-    ### 🚀 Stappenplan voor je huiswerk:
-    1. **Upload je taken:** Je kunt nu meerdere foto's of PDF's tegelijk uploaden via de zijbalk.
-    2. **Typ je poging:** Zet in de chat wat je al geprobeerd hebt.
-    3. **Check en leer:** Gebruik de rekentools in de zijbalk om je eigen antwoorden te controleren.
-    4. **Test je kennis:** Klik in de zijbalk op de knop om een korte oefentoets te maken!
+    Welkom! Deze app is jouw persoonlijke digitale bijlesleraar. Het is nadrukkelijk **geen antwoordmachine**.
     """)
+elif current_topic == "📈 Permanente Groei-analyse":
+    st.title("📈 Permanente Groei & Voortgangsanalyse")
+    st.markdown("Hier wordt de historische ontwikkeling van de leerling bijgehouden op basis van eerdere communicatie en vraagstukken.")
+    st.info(groei_data.get("growth_summary", "Nog geen analyse beschikbaar."))
+    
+    if st.button("Genereer nieuwe AI-groeianalyse op basis van laatste interacties"):
+        with st.spinner("De bijlesleraar analyseert de leercurve..."):
+            analysis_prompt = f"Analyseer de communicatie en geef een professionele, objectieve voortgangsrapportage over de wiskundige groei, sterke punten en verbeterpunten van de leerling in het 2de jaar ASO."
+            res = call_claude([{"role": "user", "content": analysis_prompt}])
+            groei_data["growth_summary"] = res
+            save_persistent_groei(groei_data)
+            st.success("Groeianalyse bijgewerkt!")
+            st.rerun()
 else:
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
@@ -342,8 +331,11 @@ else:
                 st.write(content)
 
     if prompt := st.chat_input("Schrijf hier je vraag of je poging..."):
+        # Update historische teller
+        groei_data["total_questions"] = groei_data.get("total_questions", 0) + 1
+        save_persistent_groei(groei_data)
+
         content_parts = []
-        # Voeg alle actieve documenten toe aan de berichtstructuur
         for doc in st.session_state.active_documents:
             if doc["type"].startswith("image/"):
                 content_parts.append({
@@ -371,7 +363,7 @@ else:
                 role = m["role"]
                 content = m["content"]
                 if isinstance(content, list):
-                    texts = [p["text"] for p in content if isinstance(p, dict) and p.get("type") == "text"]
+                    texts = [p["text"] for p in content if isinstance(p, dict) and p.get("type"] == "text"]
                     api_messages.append({"role": role, "content": " ".join(texts)})
                 elif isinstance(content, dict) and content.get("type") == "image":
                     api_messages.append({"role": role, "content": f"[Afbeelding getoond: {content.get('caption')}]"})
@@ -380,7 +372,7 @@ else:
             api_messages[-1]["content"] = content_parts
             response_text = call_claude(api_messages)
             
-        with st.chat_message("assistant"):
+        with st.assistant_message := st.chat_message("assistant"):
             st.write(response_text)
         st.session_state.messages.append({"role": "assistant", "content": response_text})
         st.rerun()
