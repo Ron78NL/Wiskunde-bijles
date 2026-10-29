@@ -24,10 +24,18 @@ GROEI_FILE = ROOT / "student_groei.json"
 def load_persistent_groei():
     if GROEI_FILE.exists():
         try:
-            return json.loads(GROEI_FILE.read_text(encoding="utf-8"))
+            data = json.loads(GROEI_FILE.read_text(encoding="utf-8"))
+            if "weak_points" not in data:
+                data["weak_points"] = []
+            return data
         except Exception:
             pass
-    return {"total_questions": 0, "topics_practiced": [], "growth_summary": "Nog geen historische analyse beschikbaar. Begin met oefenen!"}
+    return {
+        "total_questions": 0, 
+        "topics_practiced": [], 
+        "weak_points": [],
+        "growth_summary": "Nog geen historische analyse beschikbaar. Begin met oefenen en analyseer de voortgang."
+    }
 
 def save_persistent_groei(data):
     try:
@@ -143,7 +151,7 @@ st.caption("Sint-Lodewijkscollege Brugge — 2de jaar ASO")
 
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Dag! Leuk dat je er bent. 😊 Waaraan wil je vandaag werken? Je mag een vraag stellen of hieronder een oefening of toets uploaden."}
+        {"role": "assistant", "content": "Dag! Welkom bij de bijles. Zorg dat je pen en papier bij de hand hebt. Wat gaan we vandaag kritisch bekijken?"}
     ]
 
 if "active_documents" not in st.session_state:
@@ -183,27 +191,6 @@ with st.sidebar:
             st.rerun()
 
     st.markdown("---")
-    st.subheader("🎯 Test je kennis")
-    if st.button("Maak een mini-oefentoets 📝"):
-        quiz_prompt = "Geef me een korte oefentoets van 3 leuke, gerichte vragen over de leerstof die we tot nu toe besproken hebben, zodat ik kan testen of ik het echt begrijp."
-        st.session_state.messages.append({"role": "user", "content": quiz_prompt})
-        
-        api_messages = []
-        for m in st.session_state.messages:
-            role = m["role"]
-            content = m["content"]
-            if isinstance(content, list):
-                texts = [p["text"] for p in content if isinstance(p, dict) and p.get("type", "") == "text"]
-                api_messages.append({"role": role, "content": " ".join(texts)})
-            else:
-                api_messages.append({"role": role, "content": content})
-                
-        with st.spinner("De bijlesleraar stelt een toetsje voor je op..."):
-            response_text = call_claude(api_messages)
-            st.session_state.messages.append({"role": "assistant", "content": response_text})
-        st.rerun()
-            
-    st.markdown("---")
     st.subheader("🛠️ Modus & Hulpmiddel")
     
     current_topic = st.selectbox(
@@ -211,6 +198,7 @@ with st.sidebar:
         [
             "💬 Chat met Bijlesleraar",
             "📖 Hoe werkt het? (Handleiding)",
+            "🎯 Adaptieve Foutenbank-toets",
             "📈 Permanente Groei-analyse",
             "Functies & Grafieken (Rechten / Parabolen)",
             "Statistiek & Centrummaten",
@@ -269,7 +257,7 @@ with st.sidebar:
                 pct_val = st.number_input("Percentage (%):", value=21.0, key="pct_v")
                 if st.button("Bereken deel"):
                     ans = (base_val * pct_val) / 100
-                    st.info(f"{pct_val}% van {base_val} = **{ans}**")
+                    st.info(f"{pct_val}% van het getal is **{ans}**")
             else:
                 old_v = st.number_input("Oude waarde:", value=80.0, key="old_val")
                 new_v = st.number_input("Nieuwe waarde:", value=100.0, key="new_val")
@@ -285,37 +273,46 @@ with st.sidebar:
             st.latex(r"(a + b)(a - b) = a^2 - b^2")
 
     st.markdown("---")
-    st.subheader("🌟 Permanente Groei-meter")
-    st.metric(label="Totaal gestelde vragen (historisch)", value=groei_data.get("total_questions", 0))
-    st.progress(min(groei_data.get("total_questions", 0) / 50.0, 1.0))
-    st.success("Voortgang wordt permanent bijgehouden over alle sessies heen. 🚀")
+    st.subheader("🌟 Voortgang & Foutenbank")
+    st.metric(label="Totaal gestelde vragen", value=groei_data.get("total_questions", 0))
+    st.markdown(f"**Geregistreerde zwakke punten:** {len(groei_data.get('weak_points', []))}")
 
     st.markdown("---")
-    if st.button("🗑️ Wis hele gesprek (Begin opnieuw)"):
+    if st.button("🗑️ Wis hele gesprek"):
         st.session_state.messages = [
-            {"role": "assistant", "content": "Dag! Het gesprek is schoongeveegd. 😊 Waar gaan we nu aan werken?"}
+            {"role": "assistant", "content": "Gesetteld. We beginnen weer met een schone lei. Wat pakken we aan?"}
         ]
         st.session_state.active_documents = []
         st.rerun()
 
 # Hoofdscherm logica
 if current_topic == "📖 Hoe werkt het? (Handleiding)":
-    st.title("📖 Hoe werkt deze Wiskundebijles-app?")
-    st.markdown("""
-    Welkom! Deze app is jouw persoonlijke digitale bijlesleraar. Het is nadrukkelijk **geen antwoordmachine**.
-    """)
-elif current_topic == "📈 Permanente Groei-analyse":
-    st.title("📈 Permanente Groei & Voortgangsanalyse")
-    st.markdown("Hier wordt de historische ontwikkeling van de leerling bijgehouden op basis van eerdere communicatie en vraagstukken.")
-    st.info(groei_data.get("growth_summary", "Nog geen analyse beschikbaar."))
+    st.title("📖 Handleiding")
+    st.markdown("Deze app is streng gefocust op zelfstandig nadenken en het wegwerken van feitelijke tekortkomingen in het 2de jaar ASO.")
+elif current_topic == "🎯 Adaptieve Foutenbank-toets":
+    st.title("🎯 Adaptieve Foutenbank-toets")
+    st.markdown("Deze toets is gebaseerd op de zwakke punten en fouten die uit eerdere sessies naar voren zijn gekomen.")
     
-    if st.button("Genereer nieuwe AI-groeianalyse op basis van laatste interacties"):
-        with st.spinner("De bijlesleraar analyseert de leercurve..."):
-            analysis_prompt = f"Analyseer de communicatie en geef een professionele, objectieve voortgangsrapportage over de wiskundige groei, sterke punten en verbeterpunten van de leerling in het 2de jaar ASO."
-            res = call_claude([{"role": "user", "content": analysis_prompt}])
+    weak_pts = groei_data.get("weak_points", [])
+    if weak_pts:
+        st.info(f"Geregistreerde aandachtsgebieden: {', '.join(weak_pts)}")
+    else:
+        st.warning("Er zijn nog geen specifieke zwakke punten geregistreerd. De toets behandelt fundamentele onderwerpen van het 2de jaar ASO.")
+
+    if st.button("Genereer Foutenbank-toets nu"):
+        with st.spinner("De coach stelt een gerichte toets samen..."):
+            prompt_toets = f"Genereer een gerichte oefentoets van 3 pittige vragen voor een leerling in het 2de jaar ASO, gebaseerd op deze bekende zwakke punten: {weak_pts}. Geef geen antwoorden, daag uit tot stappen."
+            res = call_claude([{"role": "user", "content": prompt_toets}])
+            st.session_state.messages.append({"role": "assistant", "content": res})
+            st.success("Toets gegenereerd! Schakel terug naar 'Chat met Bijlesleraar' om te beginnen.")
+elif current_topic == "📈 Permanente Groei-analyse":
+    st.title("📈 Permanente Groei-analyse")
+    st.markdown(groei_data.get("growth_summary", "Nog geen analyse beschikbaar."))
+    if st.button("Bijwerken analyse"):
+        with st.spinner("Analyseren..."):
+            res = call_claude([{"role": "user", "content": "Geef een kritische analyse van de leerprestaties en verbeterpunten voor het 2de jaar ASO."}])
             groei_data["growth_summary"] = res
             save_persistent_groei(groei_data)
-            st.success("Groeianalyse bijgewerkt!")
             st.rerun()
 else:
     for msg in st.session_state.messages:
@@ -330,7 +327,7 @@ else:
             else:
                 st.write(content)
 
-    if prompt := st.chat_input("Schrijf hier je vraag of je poging..."):
+    if prompt := st.chat_input("Schrijf hier je vraag of je uitwerking..."):
         groei_data["total_questions"] = groei_data.get("total_questions", 0) + 1
         save_persistent_groei(groei_data)
 
@@ -356,7 +353,7 @@ else:
                 st.caption(f"📎 Bijlagen: {names}")
             st.write(prompt)
             
-        with st.spinner("De bijlesleraar denkt na..."):
+        with st.spinner("De coach analyseert je antwoord..."):
             api_messages = []
             for i, m in enumerate(st.session_state.messages):
                 role = m["role"]
