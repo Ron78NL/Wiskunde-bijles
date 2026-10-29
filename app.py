@@ -362,7 +362,6 @@ else:
     if prompt := st.chat_input("Schrijf hier je vraag of je uitwerking..."):
         groei_data["total_questions"] = groei_data.get("total_questions", 0) + 1
         
-        # Voeg eventueel bestandsnamen toe aan de behandelde onderwerpen/methodiek
         for doc in st.session_state.active_documents:
             if doc["name"] not in groei_data["topics_covered"]:
                 groei_data["topics_covered"].append(doc["name"])
