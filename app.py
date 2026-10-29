@@ -48,9 +48,19 @@ def build_system_prompt():
     return prompt
 
 def call_claude(messages):
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    # Probeer de sleutel te vinden via Streamlit Secrets (online) of os.environ (lokaal)
+    key = ""
+    try:
+        if "ANTHROPIC_API_KEY" in st.secrets:
+            key = st.secrets["ANTHROPIC_API_KEY"]
+    except Exception:
+        pass
+        
     if not key:
-        return "Fout: Geen API-sleutel gevonden in het .env-bestand."
+        key = os.environ.get("ANTHROPIC_API_KEY", "")
+        
+    if not key:
+        return "Fout: Geen API-sleutel gevonden. Controleer of de ANTHROPIC_API_KEY is ingesteld in de Streamlit Secrets."
         
     payload = json.dumps({
         "model": MODEL,
@@ -69,6 +79,16 @@ def call_claude(messages):
             "anthropic-version": "2023-06-01",
         },
     )
+    
+    try:
+        with urllib.request.urlopen(req, timeout=90, context=ssl_context()) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return "\n".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+    except urllib.error.HTTPError as e:
+        error_detail = e.read().decode("utf-8", "ignore")
+        return f"API Fout ({e.code}): {error_detail}"
+    except Exception as e:
+        return f"Er ging iets mis bij het verbinden met de bijlesleraar: {e}"
     
     try:
         with urllib.request.urlopen(req, timeout=90, context=ssl_context()) as resp:
