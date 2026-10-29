@@ -27,6 +27,8 @@ def load_persistent_groei():
             data = json.loads(GROEI_FILE.read_text(encoding="utf-8"))
             if "weak_points" not in data:
                 data["weak_points"] = []
+            if "strong_points" not in data:
+                data["strong_points"] = []
             return data
         except Exception:
             pass
@@ -34,6 +36,7 @@ def load_persistent_groei():
         "total_questions": 0, 
         "topics_practiced": [], 
         "weak_points": [],
+        "strong_points": [],
         "growth_summary": "Nog geen historische analyse beschikbaar. Begin met oefenen en analyseer de voortgang."
     }
 
@@ -199,7 +202,7 @@ with st.sidebar:
             "💬 Chat met Bijlesleraar",
             "📖 Hoe werkt het? (Handleiding)",
             "🎯 Adaptieve Foutenbank-toets",
-            "📈 Permanente Groei-analyse",
+            "📈 Permanente Groei- & Sterke Punten-analyse",
             "Functies & Grafieken (Rechten / Parabolen)",
             "Statistiek & Centrummaten",
             "Procenten & Verhoudingen (BTW / Prijs)",
@@ -273,9 +276,10 @@ with st.sidebar:
             st.latex(r"(a + b)(a - b) = a^2 - b^2")
 
     st.markdown("---")
-    st.subheader("🌟 Voortgang & Foutenbank")
+    st.subheader("🌟 Voortgang & Profiel")
     st.metric(label="Totaal gestelde vragen", value=groei_data.get("total_questions", 0))
-    st.markdown(f"**Geregistreerde zwakke punten:** {len(groei_data.get('weak_points', []))}")
+    st.markdown(f"**Sterke punten:** {len(groei_data.get('strong_points', []))}")
+    st.markdown(f"**Aandachtspunten:** {len(groei_data.get('weak_points', []))}")
 
     st.markdown("---")
     if st.button("🗑️ Wis hele gesprek"):
@@ -288,16 +292,16 @@ with st.sidebar:
 # Hoofdscherm logica
 if current_topic == "📖 Hoe werkt het? (Handleiding)":
     st.title("📖 Handleiding")
-    st.markdown("Deze app is streng gefocust op zelfstandig nadenken en het wegwerken van feitelijke tekortkomingen in het 2de jaar ASO.")
+    st.markdown("Deze app is streng gefocust op zelfstandig nadenken, het registreren van sterke vaardigheden en het wegwerken van feitelijke tekortkomingen in het 2de jaar ASO.")
 elif current_topic == "🎯 Adaptieve Foutenbank-toets":
     st.title("🎯 Adaptieve Foutenbank-toets")
-    st.markdown("Deze toets is gebaseerd op de zwakke punten en fouten die uit eerdere sessies naar voren zijn gekomen.")
+    st.markdown("Deze toets is gebaseerd op de geregistreerde zwakke punten uit eerdere sessies.")
     
     weak_pts = groei_data.get("weak_points", [])
     if weak_pts:
-        st.info(f"Geregistreerde aandachtsgebieden: {', '.join(weak_pts)}")
+        st.info(f"Bekende aandachtsgebieden: {', '.join(weak_pts)}")
     else:
-        st.warning("Er zijn nog geen specifieke zwakke punten geregistreerd. De toets behandelt fundamentele onderwerpen van het 2de jaar ASO.")
+        st.warning("Nog geen specifieke zwakke punten geregistreerd.")
 
     if st.button("Genereer Foutenbank-toets nu"):
         with st.spinner("De coach stelt een gerichte toets samen..."):
@@ -305,14 +309,34 @@ elif current_topic == "🎯 Adaptieve Foutenbank-toets":
             res = call_claude([{"role": "user", "content": prompt_toets}])
             st.session_state.messages.append({"role": "assistant", "content": res})
             st.success("Toets gegenereerd! Schakel terug naar 'Chat met Bijlesleraar' om te beginnen.")
-elif current_topic == "📈 Permanente Groei-analyse":
-    st.title("📈 Permanente Groei-analyse")
-    st.markdown(groei_data.get("growth_summary", "Nog geen analyse beschikbaar."))
-    if st.button("Bijwerken analyse"):
-        with st.spinner("Analyseren..."):
-            res = call_claude([{"role": "user", "content": "Geef een kritische analyse van de leerprestaties en verbeterpunten voor het 2de jaar ASO."}])
+elif current_topic == "📈 Permanente Groei- & Sterke Punten-analyse":
+    st.title("📈 Permanente Groei- & Sterke Punten-analyse")
+    st.markdown("Overzicht van zowel de sterke vaardigheden als de leerpunten van de leerling.")
+    
+    st.subheader("💪 Geregistreerde Sterke Punten")
+    strongs = groei_data.get("strong_points", [])
+    if strongs:
+        for s in strongs:
+            st.markdown(f"- {s}")
+    else:
+        st.write("Nog geen sterke punten expliciet vastgelegd. Laat Claude een analyse draaien om ze te identificeren.")
+
+    st.subheader("📌 Uitgebreide Voortgangsrapportage")
+    st.info(groei_data.get("growth_summary", "Nog geen analyse beschikbaar."))
+    
+    if st.button("Genereer volledige analyse (Sterke & Zwakke punten)"):
+        with st.spinner("De coach analyseert de sterke punten en leercurve..."):
+            analysis_prompt = (
+                "Analyseer de communicatie tot nu toe grondig en geef een professionele voortgangsrapportage "
+                "voor een leerling in het 2de jaar ASO. Benoem expliciet:\n"
+                "1. Wat gaat er al heel erg goed (Sterke punten)?\n"
+                "2. Waar liggen nog hardnekkige valkuilen (Zwakke punten)?\n"
+                "3. Concreet advies voor de volgende stappen."
+            )
+            res = call_claude([{"role": "user", "content": analysis_prompt}])
             groei_data["growth_summary"] = res
             save_persistent_groei(groei_data)
+            st.success("Analyse bijgewerkt!")
             st.rerun()
 else:
     for msg in st.session_state.messages:
