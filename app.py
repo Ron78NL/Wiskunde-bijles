@@ -193,7 +193,7 @@ with st.sidebar:
             role = m["role"]
             content = m["content"]
             if isinstance(content, list):
-                texts = [p["text"] for p in content if isinstance(p, dict) and p.get("type") == "text"]
+                texts = [p["text"] for p in content if isinstance(p, dict) and p.get("type", "") == "text"]
                 api_messages.append({"role": role, "content": " ".join(texts)})
             else:
                 api_messages.append({"role": role, "content": content})
@@ -331,7 +331,6 @@ else:
                 st.write(content)
 
     if prompt := st.chat_input("Schrijf hier je vraag of je poging..."):
-        # Update historische teller
         groei_data["total_questions"] = groei_data.get("total_questions", 0) + 1
         save_persistent_groei(groei_data)
 
@@ -363,7 +362,7 @@ else:
                 role = m["role"]
                 content = m["content"]
                 if isinstance(content, list):
-                    texts = [p["text"] for p in content if isinstance(p, dict) and p.get("type"] == "text"]
+                    texts = [p["text"] for p in content if isinstance(p, dict) and p.get("type", "") == "text"]
                     api_messages.append({"role": role, "content": " ".join(texts)})
                 elif isinstance(content, dict) and content.get("type") == "image":
                     api_messages.append({"role": role, "content": f"[Afbeelding getoond: {content.get('caption')}]"})
@@ -372,7 +371,7 @@ else:
             api_messages[-1]["content"] = content_parts
             response_text = call_claude(api_messages)
             
-        with st.assistant_message := st.chat_message("assistant"):
+        with st.chat_message("assistant"):
             st.write(response_text)
         st.session_state.messages.append({"role": "assistant", "content": response_text})
         st.rerun()
