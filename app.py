@@ -48,7 +48,6 @@ def build_system_prompt():
     return prompt
 
 def call_claude(messages):
-    # Probeer de sleutel te vinden via Streamlit Secrets (online) of os.environ (lokaal)
     key = ""
     try:
         if "ANTHROPIC_API_KEY" in st.secrets:
@@ -79,16 +78,6 @@ def call_claude(messages):
             "anthropic-version": "2023-06-01",
         },
     )
-    
-    try:
-        with urllib.request.urlopen(req, timeout=90, context=ssl_context()) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return "\n".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-    except urllib.error.HTTPError as e:
-        error_detail = e.read().decode("utf-8", "ignore")
-        return f"API Fout ({e.code}): {error_detail}"
-    except Exception as e:
-        return f"Er ging iets mis bij het verbinden met de bijlesleraar: {e}"
     
     try:
         with urllib.request.urlopen(req, timeout=90, context=ssl_context()) as resp:
@@ -150,35 +139,43 @@ if "messages" not in st.session_state:
         {"role": "assistant", "content": "Dag! Leuk dat je er bent. 😊 Waaraan wil je vandaag werken? Je mag een vraag stellen of hieronder een oefening of toets uploaden."}
     ]
 
-if "active_document" not in st.session_state:
-    st.session_state.active_document = None
+if "active_documents" not in st.session_state:
+    st.session_state.active_documents = []
 
 user_messages_count = sum(1 for m in st.session_state.messages if m["role"] == "user")
 
 with st.sidebar:
-    st.header("📂 Oefening of Toets")
-    uploaded_file = st.file_uploader("Upload hier een foto of PDF", type=["jpg", "jpeg", "png", "webp", "pdf"])
+    st.header("📂 Oefeningen of Toetsen")
+    uploaded_files = st.file_uploader(
+        "Upload hier meerdere foto's of PDF's", 
+        type=["jpg", "jpeg", "png", "webp", "pdf"], 
+        accept_multiple_files=True
+    )
     
-    if uploaded_file:
+    if uploaded_files:
         import base64
-        bytes_data = uploaded_file.getvalue()
-        b64_data = base64.b64encode(bytes_data).decode("utf-8")
-        file_type = uploaded_file.type
-        
+        docs_list = []
         schoolwerk_dir = ROOT / "schoolwerk"
         schoolwerk_dir.mkdir(exist_ok=True)
-        (schoolwerk_dir / uploaded_file.name).write_bytes(bytes_data)
         
-        st.session_state.active_document = {
-            "name": uploaded_file.name,
-            "type": file_type,
-            "data": b64_data
-        }
-        st.success(f"Geladen: {uploaded_file.name}")
+        for uploaded_file in uploaded_files:
+            bytes_data = uploaded_file.getvalue()
+            b64_data = base64.b64encode(bytes_data).decode("utf-8")
+            
+            (schoolwerk_dir / uploaded_file.name).write_bytes(bytes_data)
+            
+            docs_list.append({
+                "name": uploaded_file.name,
+                "type": uploaded_file.type,
+                "data": b64_data
+            })
+            
+        st.session_state.active_documents = docs_list
+        st.success(f"{len(uploaded_files)} bestand(en) geladen.")
     
-    if st.session_state.active_document:
-        if st.button("🗑️ Huidige bijlage wissen"):
-            st.session_state.active_document = None
+    if st.session_state.active_documents:
+        if st.button("🗑️ Alle bijlagen wissen"):
+            st.session_state.active_documents = []
             st.rerun()
 
     st.markdown("---")
@@ -192,7 +189,7 @@ with st.sidebar:
             role = m["role"]
             content = m["content"]
             if isinstance(content, list):
-                texts = [p["text"] for p in content if p.get("type") == "text"]
+                texts = [p["text"] for p in content if isinstance(p, dict) and p.get("type") == "text"]
                 api_messages.append({"role": role, "content": " ".join(texts)})
             else:
                 api_messages.append({"role": role, "content": content})
@@ -205,7 +202,6 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("🛠️ Modus & Hulpmiddel")
     
-    # Keuzemenu inclusief de handleiding als optie
     current_topic = st.selectbox(
         "Kies wat je wilt doen:",
         [
@@ -218,7 +214,6 @@ with st.sidebar:
         ]
     )
 
-    # Dynamische weergave van de tool of handleiding
     if current_topic == "Functies & Grafieken (Rechten / Parabolen)":
         with st.expander("📈 Grafiek Generator", expanded=True):
             figure_type = st.selectbox("Kies een figuur:", ["Rechte lijn", "Parabool ($ax^2+bx+c$)"])
@@ -305,10 +300,10 @@ with st.sidebar:
         st.session_state.messages = [
             {"role": "assistant", "content": "Dag! Het gesprek is schoongeveegd. 😊 Waar gaan we nu aan werken?"}
         ]
-        st.session_state.active_document = None
+        st.session_state.active_documents = []
         st.rerun()
 
-# Hoofdscherm logica: Toon de handleiding als die is geselecteerd, anders de chat
+# Hoofdscherm logica
 if current_topic == "📖 Hoe werkt het? (Handleiding)":
     st.title("📖 Hoe werkt deze Wiskundebijles-app?")
     st.markdown("""
@@ -323,39 +318,33 @@ if current_topic == "📖 Hoe werkt het? (Handleiding)":
     ---
 
     ### 🛠️ Hoe gebruik je de tools?
-    In de zijbalk kun je het **huidige onderwerp** kiezen waar je mee bezig bent. De app toont dan automatisch de tool die daarbij hoort:
-    1. **Functies & Grafieken:** Controleer rechten en parabolen.
-    2. **Statistiek & Centrummaten:** Bereken snel het gemiddelde, de mediaan en de modus.
-    3. **Procenten & Prijscontrole:** Handig voor BTW-berekeningen en procentuele verandering.
-    4. **Algebra & Merkwaardige Producten:** Bekijk de belangrijkste formules als geheugensteuntje.
+    In de zijbalk kun je het **huidige onderwerp** kiezen waar je mee bezig bent. De app toont dan automatisch de tool die daarbij hoort.
 
     ---
 
     ### 🚀 Stappenplan voor je huiswerk:
-    1. **Upload je taak:** Maak een foto van je oefeningenblad of upload een PDF via de zijbalk.
+    1. **Upload je taken:** Je kunt nu meerdere foto's of PDF's tegelijk uploaden via de zijbalk.
     2. **Typ je poging:** Zet in de chat wat je al geprobeerd hebt.
     3. **Check en leer:** Gebruik de rekentools in de zijbalk om je eigen antwoorden te controleren.
     4. **Test je kennis:** Klik in de zijbalk op de knop om een korte oefentoets te maken!
     """)
 else:
-    # Toon de chatgeschiedenis
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             content = msg["content"]
             if isinstance(content, list):
                 for part in content:
-                    if part.get("type") == "text":
+                    if isinstance(part, dict) and part.get("type") == "text":
                         st.write(part["text"])
             elif isinstance(content, dict) and content.get("type") == "image":
                 st.image(content["data"], caption=content.get("caption"))
             else:
                 st.write(content)
 
-    # Chat invoer onderaan
     if prompt := st.chat_input("Schrijf hier je vraag of je poging..."):
         content_parts = []
-        if st.session_state.active_document:
-            doc = st.session_state.active_document
+        # Voeg alle actieve documenten toe aan de berichtstructuur
+        for doc in st.session_state.active_documents:
             if doc["type"].startswith("image/"):
                 content_parts.append({
                     "type": "image",
@@ -366,19 +355,23 @@ else:
                     "type": "document",
                     "source": {"type": "base64", "media_type": "application/pdf", "data": doc["data"]}
                 })
+        
         content_parts.append({"type": "text", "text": prompt})
         st.session_state.messages.append({"role": "user", "content": content_parts})
+        
         with st.chat_message("user"):
-            if st.session_state.active_document:
-                st.caption(f"📎 Bijlage: {st.session_state.active_document['name']}")
+            if st.session_state.active_documents:
+                names = ", ".join([d["name"] for d in st.session_state.active_documents])
+                st.caption(f"📎 Bijlagen: {names}")
             st.write(prompt)
+            
         with st.spinner("De bijlesleraar denkt na..."):
             api_messages = []
             for i, m in enumerate(st.session_state.messages):
                 role = m["role"]
                 content = m["content"]
                 if isinstance(content, list):
-                    texts = [p["text"] for p in content if p.get("type") == "text"]
+                    texts = [p["text"] for p in content if isinstance(p, dict) and p.get("type") == "text"]
                     api_messages.append({"role": role, "content": " ".join(texts)})
                 elif isinstance(content, dict) and content.get("type") == "image":
                     api_messages.append({"role": role, "content": f"[Afbeelding getoond: {content.get('caption')}]"})
@@ -386,6 +379,7 @@ else:
                     api_messages.append({"role": role, "content": content})
             api_messages[-1]["content"] = content_parts
             response_text = call_claude(api_messages)
+            
         with st.chat_message("assistant"):
             st.write(response_text)
         st.session_state.messages.append({"role": "assistant", "content": response_text})
