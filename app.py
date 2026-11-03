@@ -63,6 +63,49 @@ def load_env():
 
 load_env()
 
+
+# ---------------------------------------------------------------- wachtwoord
+def _geheim(naam):
+    try:
+        if naam in st.secrets:
+            return str(st.secrets[naam])
+    except Exception:
+        pass
+    return os.environ.get(naam, "")
+
+
+def controleer_toegang():
+    import hmac
+    import time
+    wachtwoord = _geheim("APP_PASSWORD")
+    lokaal = str(st.get_option("server.address") or "") in ("127.0.0.1", "localhost", "::1")
+    if not wachtwoord:
+        if lokaal:
+            return
+        st.error("Er is nog geen wachtwoord ingesteld (APP_PASSWORD in de Secrets).")
+        st.stop()
+    if st.session_state.get("ingelogd"):
+        return
+    st.title("📐 Wiskundebijles")
+    pogingen = st.session_state.get("pogingen", 0)
+    if pogingen >= 5 and time.time() - st.session_state.get("laatste_poging", 0) < 60:
+        st.warning("Te veel pogingen. Wacht een minuutje en probeer opnieuw.")
+        st.stop()
+    with st.form("login"):
+        invoer = st.text_input("Wachtwoord", type="password")
+        if st.form_submit_button("Inloggen", type="primary"):
+            if hmac.compare_digest(invoer.encode(), wachtwoord.encode()):
+                st.session_state.ingelogd = True
+                st.session_state.pogingen = 0
+                st.rerun()
+            st.session_state.pogingen = pogingen + 1
+            st.session_state.laatste_poging = time.time()
+            st.error("Dat wachtwoord klopt niet.")
+    st.stop()
+
+
+controleer_toegang()
+
 def ssl_context():
     try:
         import certifi
