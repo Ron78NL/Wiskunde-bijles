@@ -1,0 +1,16 @@
+# Geheimen: nooit op GitHub
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Persoonlijk schoolwerk en voortgang van je dochter
+schoolwerk/
+student_groei.json
+werkpunten.md
+
+# Back-ups en rommel
+*.bak
+public/index *.html
+__pycache__/
+.DS_Store
