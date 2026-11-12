@@ -49,41 +49,47 @@ class Opslag:
             return json.loads(r.read().decode("utf-8"))
 
     # ------------------------------------------------------------ publiek
-    def lees(self, pad, standaard=None):
-        """Leest een JSON-bestand; geeft 'standaard' als het (nog) niet bestaat."""
+    def lees_bytes(self, pad):
+        """Leest een bestand als bytes; geeft None als het (nog) niet bestaat."""
         if not self.online:
             f = self.map / pad
-            if not f.exists():
-                return standaard
-            try:
-                return json.loads(f.read_text(encoding="utf-8"))
-            except Exception:
-                return standaard
+            return f.read_bytes() if f.exists() else None
         try:
             d = self._gh("GET", pad)
         except urllib.error.HTTPError as e:
             # 404 = bestand bestaat (nog) niet; 409 = de repo is nog helemaal leeg
             if e.code in (404, 409):
                 self._sha.pop(pad, None)
-                return standaard
+                return None
             raise
         self._sha[pad] = d.get("sha")
         if d.get("content"):
-            tekst = base64.b64decode(d["content"]).decode("utf-8")
-        else:  # bestanden > 1 MB komen zonder inhoud mee: apart ophalen
-            req = urllib.request.Request(d["download_url"], headers={"Authorization": f"Bearer {self.token}"})
-            with urllib.request.urlopen(req, timeout=30, context=_ssl()) as r:
-                tekst = r.read().decode("utf-8")
-        return json.loads(tekst)
+            return base64.b64decode(d["content"])
+        # bestanden > 1 MB komen zonder inhoud mee: apart ophalen
+        req = urllib.request.Request(d["download_url"], headers={"Authorization": f"Bearer {self.token}"})
+        with urllib.request.urlopen(req, timeout=30, context=_ssl()) as r:
+            return r.read()
+
+    def lees(self, pad, standaard=None):
+        """Leest een JSON-bestand; geeft 'standaard' als het (nog) niet bestaat."""
+        data = self.lees_bytes(pad)
+        if data is None:
+            return standaard
+        try:
+            return json.loads(data.decode("utf-8"))
+        except Exception:
+            return standaard
 
     def schrijf(self, pad, obj):
-        tekst = json.dumps(obj, ensure_ascii=False, indent=1)
+        self.schrijf_bytes(pad, json.dumps(obj, ensure_ascii=False, indent=1).encode("utf-8"))
+
+    def schrijf_bytes(self, pad, data):
         if not self.online:
             f = self.map / pad
             f.parent.mkdir(parents=True, exist_ok=True)
-            f.write_text(tekst, encoding="utf-8")
+            f.write_bytes(data)
             return
-        body = {"message": f"bewaar {pad}", "content": base64.b64encode(tekst.encode("utf-8")).decode("ascii")}
+        body = {"message": f"bewaar {pad}", "content": base64.b64encode(data).decode("ascii")}
         if pad not in self._sha:
             self.lees(pad)  # sha ophalen als het bestand al bestaat
         if self._sha.get(pad):

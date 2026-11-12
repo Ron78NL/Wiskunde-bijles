@@ -1,6 +1,10 @@
 import os
+import re
+import sys
 import json
 import ssl
+import base64
+import urllib.error
 import urllib.request
 from pathlib import Path
 import streamlit as st
@@ -17,39 +21,16 @@ st.set_page_config(
 )
 
 ROOT = Path(__file__).resolve().parent
-MODEL = "claude-haiku-5-5"
 API_URL = "https://api.anthropic.com/v1/messages"
-GROEI_FILE = ROOT / "student_groei.json"
+GROEI_FILE = ROOT / "student_groei.json"  # oud, alleen nog om over te nemen
 
-def load_persistent_groei():
-    data = None
-    try:
-        data = opslag.lees("groei.json")
-    except Exception:
-        pass
-    if data is None and GROEI_FILE.exists():  # oud bestand van vroeger
-        try:
-            data = json.loads(GROEI_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            data = None
-    if isinstance(data, dict):
-        data.setdefault("weak_points", [])
-        data.setdefault("strong_points", [])
-        data.setdefault("topics_covered", [])
-        return data
-    return {
-        "total_questions": 0, 
-        "topics_covered": [], 
-        "weak_points": [],
-        "strong_points": [],
-        "growth_summary": "Nog geen historische analyse beschikbaar. Begin met oefenen en analyseer de voortgang."
-    }
+# iPhone-foto's (HEIC) leesbaar maken; zonder dit pakket kon de app ze niet openen
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except Exception:
+    pass
 
-def save_persistent_groei(data):
-    try:
-        opslag.schrijf("groei.json", data)
-    except Exception:
-        pass
 
 def load_env():
     env_file = ROOT / ".env"
@@ -64,6 +45,7 @@ def load_env():
         if k and k not in os.environ:
             os.environ[k] = v
 
+
 load_env()
 
 
@@ -75,6 +57,10 @@ def _geheim(naam):
     except Exception:
         pass
     return os.environ.get(naam, "")
+
+
+# Model kan je wijzigen met MODEL in de Secrets (bv. claude-sonnet-5-5: leest handschrift beter, duurder)
+MODEL = _geheim("MODEL") or "claude-haiku-5-5"
 
 
 def controleer_toegang():
@@ -131,43 +117,168 @@ def nu():
         return datetime.now()
 
 
-def bericht_als_tekst(m):
-    """Maakt van een chatbericht iets kleins om te bewaren (zonder foto-data)."""
+def melding(tekst, icoon="✅"):
+    """Toont een melding, ook als de pagina meteen daarna herladen wordt."""
+    st.session_state.setdefault("meldingen", []).append((tekst, icoon))
+
+
+# ---------------------------------------------------------------- groeiprofiel
+def load_persistent_groei():
+    data = None
+    try:
+        data = opslag.lees("groei.json")
+    except Exception:
+        pass
+    if data is None and GROEI_FILE.exists():  # oud bestand van vroeger
+        try:
+            data = json.loads(GROEI_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            data = None
+    if isinstance(data, dict):
+        data.setdefault("weak_points", [])
+        data.setdefault("strong_points", [])
+        data.setdefault("topics_covered", [])
+        return data
+    return {
+        "total_questions": 0,
+        "topics_covered": [],
+        "weak_points": [],
+        "strong_points": [],
+        "growth_summary": "Nog geen analyse beschikbaar. Oefen eerst wat en klik dan op 'Genereer bijgewerkte analyse'."
+    }
+
+
+def save_persistent_groei(data):
+    try:
+        opslag.schrijf("groei.json", data)
+    except Exception as e:
+        print(f"Groeiprofiel niet bewaard: {e}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------- bijlagen
+MAX_FOTO_ZIJDE = 1600  # pixels; groter heeft geen zin en maakt het traag/duur
+MAX_PDF_MB = 20
+BESTANDSTYPES = ["jpg", "jpeg", "png", "webp", "heic", "heif", "pdf"]
+HOUD_FOTOBERICHTEN = 3  # zoveel recente berichten-met-foto's blijft de bijlesleraar 'zien'
+
+
+def maak_bijlage(bytes_data):
+    """Geeft (media_type, base64, jpeg_bytes) terug, of None als het bestand onleesbaar is.
+    Het type wordt uit de inhoud bepaald (niet uit de bestandsnaam), iPhone-foto's (HEIC)
+    worden omgezet, en foto's worden verkleind: een telefoonfoto is vaak te groot voor de API."""
+    if bytes_data[:5] == b"%PDF-":
+        if len(bytes_data) > MAX_PDF_MB * 1024 * 1024:
+            return None
+        return "application/pdf", base64.b64encode(bytes_data).decode("utf-8"), None
+    try:
+        from PIL import Image, ImageOps
+        img = Image.open(BytesIO(bytes_data))
+        img = ImageOps.exif_transpose(img)  # telefoonfoto's rechtop zetten
+        img = img.convert("RGB")
+        img.thumbnail((MAX_FOTO_ZIJDE, MAX_FOTO_ZIJDE))
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        jpeg = buf.getvalue()
+        return "image/jpeg", base64.b64encode(jpeg).decode("utf-8"), jpeg
+    except Exception:
+        return None
+
+
+def verwerk_bestanden(bestanden):
+    """Zet geüploade bestanden om. Geeft (api-delen, foto's als jpeg, namen, mislukte namen)."""
+    delen, fotos, namen, mislukt = [], [], [], []
+    for f in bestanden or []:
+        b = maak_bijlage(f.getvalue())
+        if b is None:
+            mislukt.append(f.name)
+            continue
+        media_type, b64, jpeg = b
+        namen.append(f.name)
+        if jpeg is not None:
+            fotos.append(jpeg)
+            delen.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}})
+        else:
+            delen.append({"type": "document", "source": {"type": "base64", "media_type": media_type, "data": b64}})
+    return delen, fotos, namen, mislukt
+
+
+def laad_foto(pad):
+    cache = st.session_state.setdefault("foto_cache", {})
+    if pad not in cache:
+        try:
+            cache[pad] = opslag.lees_bytes(pad)
+        except Exception:
+            cache[pad] = None
+    return cache[pad]
+
+
+def fotos_van(m):
+    if m.get("fotos"):
+        return m["fotos"]
+    return [f for f in (laad_foto(p) for p in m.get("foto_paden") or []) if f]
+
+
+# ---------------------------------------------------------------- gesprekken bewaren
+def tekst_van(m):
     content = m["content"]
     if isinstance(content, list):
-        tekst = " ".join(p["text"] for p in content if isinstance(p, dict) and p.get("type") == "text")
-    elif isinstance(content, dict) and content.get("type") == "image":
-        tekst = f"[Grafiek: {content.get('caption')}]"
-    else:
-        tekst = str(content)
-    uit = {"role": m["role"], "text": tekst}
-    if m.get("bijlagen"):
-        uit["bijlagen"] = m["bijlagen"]
+        return " ".join(p["text"] for p in content if isinstance(p, dict) and p.get("type") == "text")
+    if isinstance(content, dict) and content.get("type") == "image":
+        return f"[Grafiek: {content.get('caption')}]"
+    return str(content)
+
+
+def bericht_als_tekst(m):
+    """Maakt van een chatbericht iets kleins om te bewaren (foto's staan apart)."""
+    uit = {"role": m["role"], "text": tekst_van(m)}
+    for sleutel in ("bijlagen", "foto_paden"):
+        if m.get(sleutel):
+            uit[sleutel] = m[sleutel]
     if m.get("schrift"):
         uit["schrift"] = True
     return uit
 
 
 def bewaar_gesprek():
-    """Bewaart het huidige gesprek (alleen als ze er zelf iets in gevraagd heeft)."""
-    berichten = [bericht_als_tekst(m) for m in st.session_state.messages]
-    vragen = [b for b in berichten if b["role"] == "user"]
+    """Bewaart het huidige gesprek, met de foto's (alleen als ze er zelf iets in gevraagd heeft)."""
+    berichten = st.session_state.messages
+    vragen = [m for m in berichten if m["role"] == "user"]
     if not vragen:
         return
     gid = st.session_state.gesprek_id
-    titel = vragen[0]["text"].strip() or "(foto)"
-    titel = titel if len(titel) <= 70 else titel[:67] + "…"
-    tijd = nu().strftime("%Y-%m-%d %H:%M")
     try:
-        opslag.schrijf(f"gesprekken/{gid}.json", {"id": gid, "titel": titel, "bijgewerkt": tijd, "berichten": berichten})
+        for i, m in enumerate(berichten):
+            if m.get("fotos") and not m.get("foto_paden"):
+                paden = []
+                for n, jpeg in enumerate(m["fotos"]):
+                    pad = f"bijlagen/{gid}/{i}_{n}.jpg"
+                    opslag.schrijf_bytes(pad, jpeg)
+                    st.session_state.setdefault("foto_cache", {})[pad] = jpeg
+                    paden.append(pad)
+                m["foto_paden"] = paden
+        titel = tekst_van(vragen[0]).strip() or "(foto)"
+        titel = titel if len(titel) <= 70 else titel[:67] + "…"
+        tijd = nu().strftime("%Y-%m-%d %H:%M")
+        opslag.schrijf(f"gesprekken/{gid}.json", {
+            "id": gid, "titel": titel, "bijgewerkt": tijd,
+            "berichten": [bericht_als_tekst(m) for m in berichten],
+        })
         index = [g for g in (opslag.lees("gesprekken/index.json", []) or []) if g.get("id") != gid]
         index.insert(0, {"id": gid, "titel": titel, "bijgewerkt": tijd, "aantal": len(vragen)})
         opslag.schrijf("gesprekken/index.json", index)
     except Exception as e:
-        st.toast(f"Let op: het gesprek kon niet bewaard worden ({e}).", icon="⚠️")
+        print(f"Gesprek niet bewaard: {e}", file=sys.stderr)
+        melding(f"Let op: het gesprek kon niet bewaard worden ({e}).", "⚠️")
 
 
-SCHRIFT_INSTRUCTIE = """
+# ---------------------------------------------------------------- uitleg-schrift
+EXTRA_INSTRUCTIES = """
+
+## Foto's en PDF's van de leerling
+Stuurt ze een foto of PDF mee, kijk die dan eerst goed na en verwijs naar wat je ziet
+(bijvoorbeeld welke oefening of welk nummer). Kan je iets niet goed lezen (wazig, scheef,
+te donker, afgesneden), zeg dat dan duidelijk en vraag om een nieuwe foto van dichterbij.
+Doe nooit alsof er geen foto is.
 
 ## Het uitleg-schrift (heel belangrijk)
 De leerling heeft een uitleg-schrift in de app waarin ze later kan teruglezen hoe een soort oefening werkt.
@@ -180,22 +291,27 @@ opgelost is, en nooit meer dan één keer per oefening.
 """
 
 
-def haal_schrift_eruit(tekst):
-    """Haalt het <schrift>-blok uit het antwoord. Geeft (zichtbare tekst, notitie of None)."""
-    import re
-    notitie = None
-    m = re.search(r"<schrift>(.*?)(</schrift>|$)", tekst, re.S)
+def haal_blok_eruit(tekst, naam):
+    """Haalt een <naam>{json}</naam>-blok uit een antwoord. Geeft (zichtbare tekst, dict of None)."""
+    gevonden = None
+    m = re.search(rf"<{naam}>(.*?)(</{naam}>|$)", tekst, re.S)
     if m:
         try:
             ruw = m.group(1).strip()
             ruw = ruw[ruw.find("{"): ruw.rfind("}") + 1]
             d = json.loads(ruw)
-            if isinstance(d, dict) and (d.get("opgave") or d.get("uitleg")):
-                notitie = {k: str(d.get(k, "")).strip() for k in ("onderwerp", "opgave", "kern", "uitleg")}
+            gevonden = d if isinstance(d, dict) else None
         except Exception:
-            notitie = None
+            gevonden = None
         tekst = (tekst[:m.start()] + tekst[m.end():]).strip()
-    return tekst, notitie
+    return tekst, gevonden
+
+
+def haal_schrift_eruit(tekst):
+    tekst, d = haal_blok_eruit(tekst, "schrift")
+    if d and (d.get("opgave") or d.get("uitleg")):
+        return tekst, {k: str(d.get(k, "")).strip() for k in ("onderwerp", "opgave", "kern", "uitleg")}
+    return tekst, None
 
 
 def bewaar_in_schrift(notitie):
@@ -208,10 +324,12 @@ def bewaar_in_schrift(notitie):
         schrift.insert(0, notitie)
         opslag.schrijf("schrift.json", schrift)
         return True
-    except Exception:
+    except Exception as e:
+        print(f"Schrift niet bewaard: {e}", file=sys.stderr)
         return False
 
 
+# ---------------------------------------------------------------- Claude
 def ssl_context():
     try:
         import certifi
@@ -219,25 +337,18 @@ def ssl_context():
     except Exception:
         return ssl.create_default_context()
 
+
 def build_system_prompt():
     prompt_file = ROOT / "system-prompt.md"
     prompt = prompt_file.read_text(encoding="utf-8") if prompt_file.exists() else ""
-    return prompt + SCHRIFT_INSTRUCTIE
+    return prompt + EXTRA_INSTRUCTIES
 
-def call_claude(messages):
-    key = ""
-    try:
-        if "ANTHROPIC_API_KEY" in st.secrets:
-            key = st.secrets["ANTHROPIC_API_KEY"]
-    except Exception:
-        pass
-        
+
+def call_claude(messages, system=None):
+    key = _geheim("ANTHROPIC_API_KEY")
     if not key:
-        key = os.environ.get("ANTHROPIC_API_KEY", "")
-        
-    if not key:
-        return "Fout: Geen API-sleutel gevonden. Controleer of de ANTHROPIC_API_KEY is ingesteld in de Streamlit Secrets."
-        
+        return "Er is nog geen API-sleutel ingesteld (ANTHROPIC_API_KEY in de Secrets). Vraag het aan papa."
+
     # Het model denkt eerst (onzichtbaar) na, en dat denkwerk telt mee in max_tokens.
     # Met een te lage limiet was die op vóór het antwoord kwam: dan bleef de ballon leeg.
     # Effort "low": korte bijles-antwoorden hebben geen lang nadenken nodig.
@@ -245,10 +356,10 @@ def call_claude(messages):
         "model": MODEL,
         "max_tokens": 8000,
         "output_config": {"effort": "low"},
-        "system": build_system_prompt(),
+        "system": system if system is not None else build_system_prompt(),
         "messages": messages
     }).encode("utf-8")
-    
+
     req = urllib.request.Request(
         API_URL,
         data=payload,
@@ -259,7 +370,7 @@ def call_claude(messages):
             "anthropic-version": "2023-06-01",
         },
     )
-    
+
     try:
         with urllib.request.urlopen(req, timeout=180, context=ssl_context()) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -269,35 +380,47 @@ def call_claude(messages):
                     "of maak ze wat kleiner (bijvoorbeeld één oefening tegelijk).")
         return tekst
     except urllib.error.HTTPError as e:
-        error_detail = e.read().decode("utf-8", "ignore")
-        return f"API Fout ({e.code}): {error_detail}"
+        # Details naar het logboek (Streamlit 'Manage app'), een begrijpelijke zin naar haar
+        print(f"API-fout {e.code}: {e.read().decode('utf-8', 'ignore')[:2000]}", file=sys.stderr)
+        if e.code in (429, 500, 502, 503, 529):
+            return "De bijlesleraar is even heel druk. Wacht een halve minuut en stuur je vraag opnieuw."
+        if e.code == 400:
+            return ("Er ging iets mis met je bericht of je bijlage. Probeer een andere foto, "
+                    "of begin een nieuw gesprek.")
+        return f"De bijlesleraar kon niet antwoorden (fout {e.code}). Probeer het straks opnieuw."
     except Exception as e:
-        return f"Er ging iets mis bij het verbinden met de bijlesleraar: {e}"
-
-MAX_FOTO_ZIJDE = 1600  # pixels; groter heeft geen zin en maakt het traag/duur
-
-
-def maak_bijlage(bytes_data):
-    """Geeft (media_type, base64) terug, of None als het bestand onleesbaar is.
-    Het type wordt uit de inhoud bepaald (niet uit de bestandsnaam), en foto's
-    worden verkleind: een telefoonfoto kan groter zijn dan wat de API aanneemt."""
-    import base64
-    if bytes_data[:5] == b"%PDF-":
-        return "application/pdf", base64.b64encode(bytes_data).decode("utf-8")
-    try:
-        from PIL import Image, ImageOps
-        img = Image.open(BytesIO(bytes_data))
-        img = ImageOps.exif_transpose(img)  # telefoonfoto's rechtop zetten
-        img = img.convert("RGB")
-        img.thumbnail((MAX_FOTO_ZIJDE, MAX_FOTO_ZIJDE))
-        buf = BytesIO()
-        img.save(buf, format="JPEG", quality=85)
-        return "image/jpeg", base64.b64encode(buf.getvalue()).decode("utf-8")
-    except Exception:
-        return None
+        print(f"Verbindingsfout: {e}", file=sys.stderr)
+        return "Ik kan de bijlesleraar nu niet bereiken. Controleer je internet en probeer opnieuw."
 
 
-# Vaste Python-logica voor grafieken
+def api_berichten():
+    """Bouwt het gesprek voor de API. Foto's van de laatste paar berichten-met-foto's
+    gaan mee, zodat de bijlesleraar ze bij vervolgvragen nog ziet; PDF's alleen de laatste."""
+    msgs = st.session_state.messages
+    met_bijlage = [i for i, m in enumerate(msgs)
+                   if m["role"] == "user" and (m.get("delen") or m.get("foto_paden"))]
+    houd_fotos = set(met_bijlage[-HOUD_FOTOBERICHTEN:])
+    houd_pdf = set(met_bijlage[-1:])
+    uit = []
+    for i, m in enumerate(msgs):
+        tekst = tekst_van(m).strip() or "(zie bijlage)"
+        if i in houd_fotos:
+            delen = m.get("delen")
+            if delen is None:  # ouder gesprek dat verder gezet wordt: foto's terughalen
+                delen = [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                                      "data": base64.b64encode(f).decode("ascii")}}
+                         for f in fotos_van(m)]
+            if i not in houd_pdf:
+                delen = [d for d in delen if d["type"] != "document"]
+            uit.append({"role": m["role"], "content": delen + [{"type": "text", "text": tekst}]})
+        else:
+            if m["role"] == "user" and m.get("bijlagen"):
+                tekst = f"[Eerder meegestuurd: {', '.join(m['bijlagen'])}]\n{tekst}"
+            uit.append({"role": m["role"], "content": tekst})
+    return uit
+
+
+# ---------------------------------------------------------------- grafieken
 def plot_linear(a, b):
     x = np.linspace(-10, 10, 400)
     y = a * x + b
@@ -313,6 +436,7 @@ def plot_linear(a, b):
     buf.seek(0)
     plt.close(fig)
     return buf
+
 
 def plot_parabola(a, b, c):
     x = np.linspace(-10, 10, 400)
@@ -330,25 +454,28 @@ def plot_parabola(a, b, c):
     plt.close(fig)
     return buf
 
-# --- Streamlit Interface ---
-st.title("📐 Wiskundebijles")
-st.caption("Sint-Lodewijkscollege Brugge — 2de jaar ASO")
+
+# ---------------------------------------------------------------- scherm
+st.subheader("📐 Wiskundebijles")
+
+for tekst, icoon in st.session_state.pop("meldingen", []):
+    st.toast(tekst, icon=icoon)
+
+WELKOM = ("Dag! Welkom bij de bijles. Zorg dat je pen en papier bij de hand hebt. Wat gaan we vandaag bekijken?\n\n"
+          "Tip: met het ＋-knopje links in het tekstvak voeg je een foto of PDF van je oefening toe.")
 
 if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "assistant", "content": "Dag! Welkom bij de bijles. Zorg dat je pen en papier bij de hand hebt. Wat gaan we vandaag kritisch bekijken?"}
-    ]
-
-if "active_documents" not in st.session_state:
-    st.session_state.active_documents = []
+    st.session_state.messages = [{"role": "assistant", "content": WELKOM}]
 
 if "gesprek_id" not in st.session_state:
     st.session_state.gesprek_id = nu().strftime("%Y%m%d-%H%M%S")
 
-MENU = [
-    "💬 Chat met Bijlesleraar",
-    "📚 Mijn gesprekken",
-    "📒 Mijn uitleg-schrift",
+if "groei" not in st.session_state:  # één keer per bezoek ophalen, niet bij elke klik
+    st.session_state.groei = load_persistent_groei()
+groei_data = st.session_state.groei
+
+HOOFDMENU = ["💬 Chat", "📚 Gesprekken", "📒 Schrift", "🧰 Meer"]
+MEER = [
     "📖 Hoe werkt het? (Handleiding)",
     "🎯 Adaptieve Foutenbank-toets",
     "📈 Permanente Groei- & Methodiek-analyse",
@@ -359,153 +486,74 @@ MENU = [
 ]
 # Knoppen elders (bv. "Verder praten") kunnen zo terug naar de chat sturen
 if st.session_state.pop("naar_chat", False):
-    st.session_state.menu_keuze = MENU[0]
+    st.session_state.hoofd = HOOFDMENU[0]
 
-groei_data = load_persistent_groei()
+# Grote knoppen bovenaan: op een telefoon veel handiger dan het zijmenu
+hoofd = st.segmented_control("Menu", HOOFDMENU, key="hoofd", default=HOOFDMENU[0],
+                             label_visibility="collapsed") or HOOFDMENU[0]
+if hoofd == "🧰 Meer":
+    current_topic = st.selectbox("Wat wil je doen?", MEER, key="meer_keuze")
+else:
+    current_topic = {"💬 Chat": "💬 Chat met Bijlesleraar", "📚 Gesprekken": "📚 Mijn gesprekken",
+                     "📒 Schrift": "📒 Mijn uitleg-schrift"}[hoofd]
+
+
+def nieuw_gesprek(welkom):
+    st.session_state.messages = [{"role": "assistant", "content": welkom}]
+    st.session_state.gesprek_id = nu().strftime("%Y%m%d-%H%M%S")
+
 
 with st.sidebar:
-    st.header("📂 Oefeningen of Toetsen")
-    # Nieuwe sleutel = leeg upload-vak (anders zette Streamlit de oude bestanden er meteen terug)
-    st.session_state.setdefault("upload_sleutel", 0)
-    uploaded_files = st.file_uploader(
-        "Upload hier meerdere foto's of PDF's",
-        type=["jpg", "jpeg", "png", "webp", "pdf"],
-        accept_multiple_files=True,
-        key=f"upload_{st.session_state.upload_sleutel}",
-    )
-
-    if uploaded_files:
-        docs_list = []
-        schoolwerk_dir = ROOT / "schoolwerk"
-        schoolwerk_dir.mkdir(exist_ok=True)
-
-        for uploaded_file in uploaded_files:
-            bytes_data = uploaded_file.getvalue()
-            try:
-                (schoolwerk_dir / uploaded_file.name).write_bytes(bytes_data)
-            except Exception:
-                pass
-            bijlage = maak_bijlage(bytes_data)
-            if bijlage is None:
-                st.warning(f"'{uploaded_file.name}' kon ik niet lezen. Probeer een andere foto of PDF.")
-                continue
-            media_type, b64_data = bijlage
-            docs_list.append({
-                "name": uploaded_file.name,
-                "type": media_type,
-                "data": b64_data
-            })
-        st.session_state.active_documents = docs_list
-        if docs_list:
-            st.success(f"{len(docs_list)} bestand(en) geladen.")
-    else:
-        st.session_state.active_documents = []
-
-    if st.session_state.active_documents:
-        if st.button("🗑️ Alle bijlagen wissen"):
-            st.session_state.active_documents = []
-            st.session_state.upload_sleutel += 1
-            st.rerun()
+    if st.button("➕ Nieuw gesprek", help="Je huidige gesprek blijft bewaard bij 'Mijn gesprekken'.",
+                 width="stretch"):
+        nieuw_gesprek("Oké, een nieuw gesprek! Je vorige gesprek staat bij 📚 Mijn gesprekken. Wat pakken we aan?")
+        st.session_state.naar_chat = True
+        st.rerun()
 
     st.markdown("---")
-    st.subheader("🛠️ Modus & Hulpmiddel")
-    
-    current_topic = st.selectbox("Kies wat je wilt doen:", MENU, key="menu_keuze")
-
-    if current_topic == "Functies & Grafieken (Rechten / Parabolen)":
-        with st.expander("📈 Grafiek Generator", expanded=True):
-            figure_type = st.selectbox("Kies een figuur:", ["Rechte lijn", "Parabool ($ax^2+bx+c$)"])
-            if figure_type == "Rechte lijn":
-                a_line = st.number_input("Waarde van a:", value=2.0, key="a_line_input")
-                b_line = st.number_input("Waarde van b:", value=1.0, key="b_line_input")
-                if st.button("Genereer lijn"):
-                    img_buf = plot_linear(a_line, b_line)
-                    st.session_state.messages.append({"role": "assistant", "content": {"type": "image", "data": img_buf, "caption": f"Grafiek van y = {a_line}x + {b_line}"}})
-                    st.rerun()
-            elif figure_type == "Parabool ($ax^2+bx+c$)":
-                a_para = st.number_input("Waarde van a:", value=1.0, key="a_para_input")
-                b_para = st.number_input("Waarde van b:", value=0.0, key="b_para_input")
-                c_para = st.number_input("Waarde van c:", value=0.0, key="c_para_input")
-                if st.button("Genereer parabool"):
-                    img_buf = plot_parabola(a_para, b_para, c_para)
-                    st.session_state.messages.append({"role": "assistant", "content": {"type": "image", "data": img_buf, "caption": f"Grafiek van y = {a_para}x² + {b_para}x + {c_para}"}})
-                    st.rerun()
-
-    elif current_topic == "Statistiek & Centrummaten":
-        with st.expander("📊 Statistiek Checker", expanded=True):
-            nums_input = st.text_input("Getallen (komma-gescheiden):", "12, 15, 12, 18, 20")
-            if st.button("Bereken statistiek"):
-                try:
-                    nums = [float(n.strip()) for n in nums_input.split(",") if n.strip()]
-                    if nums:
-                        mean_val = np.mean(nums)
-                        median_val = np.median(nums)
-                        counts = Counter(nums)
-                        max_count = max(counts.values())
-                        modes = [k for k, v in counts.items() if v == max_count]
-                        res_text = (
-                            f"**Statistiek Resultaten:**\n"
-                            f"- Aantal: {len(nums)}\n"
-                            f"- Gemiddelde: {mean_val:.2f}\n"
-                            f"- Mediaan: {median_val}\n"
-                            f"- Modus: {', '.join(map(str, modes)) if max_count > 1 else 'Geen unieke modus'}"
-                        )
-                        st.success(res_text)
-                except Exception:
-                    st.error("Vul geldige getallen in.")
-
-    elif current_topic == "Procenten & Verhoudingen (BTW / Prijs)":
-        with st.expander("📉 Procenten & Prijscontrole", expanded=True):
-            calc_choice = st.selectbox("Type:", ["Procent van een getal", "Procentuele toename/afname"])
-            if calc_choice == "Procent van een getal":
-                base_val = st.number_input("Getal:", value=120.0, key="base_v")
-                pct_val = st.number_input("Percentage (%):", value=21.0, key="pct_v")
-                if st.button("Bereken deel"):
-                    ans = (base_val * pct_val) / 100
-                    st.info(f"{pct_val}% van het getal is **{ans}**")
-            else:
-                old_v = st.number_input("Oude waarde:", value=80.0, key="old_val")
-                new_v = st.number_input("Nieuwe waarde:", value=100.0, key="new_val")
-                if st.button("Bereken verandering"):
-                    if old_v != 0:
-                        diff = ((new_v - old_v) / old_v) * 100
-                        st.info(f"Verschil: **{diff:+.2f}%**")
-
-    elif current_topic == "Algebra & Merkwaardige Producten":
-        with st.expander("🧩 Formules & Geheugensteun", expanded=True):
-            st.latex(r"(a + b)^2 = a^2 + 2ab + b^2")
-            st.latex(r"(a - b)^2 = a^2 - 2ab + b^2")
-            st.latex(r"(a + b)(a - b) = a^2 - b^2")
-
-    st.markdown("---")
-    st.subheader("🌟 Permanente Profiel")
+    st.subheader("🌟 Mijn profiel")
     st.metric(label="Totaal gestelde vragen", value=groei_data.get("total_questions", 0))
     st.markdown(f"**Behandelde onderwerpen:** {len(groei_data.get('topics_covered', []))}")
     st.markdown(f"**Sterke punten:** {len(groei_data.get('strong_points', []))}")
     st.markdown(f"**Aandachtspunten:** {len(groei_data.get('weak_points', []))}")
 
-    st.markdown("---")
-    if st.button("➕ Nieuw gesprek", help="Dit gesprek blijft bewaard bij 'Mijn gesprekken'."):
-        st.session_state.messages = [
-            {"role": "assistant", "content": "Oké, een nieuw gesprek! Je vorige gesprek staat bij 📚 Mijn gesprekken. Wat pakken we aan?"}
-        ]
-        st.session_state.gesprek_id = nu().strftime("%Y%m%d-%H%M%S")
-        st.session_state.active_documents = []
-        st.session_state.upload_sleutel += 1
-        st.rerun()
 
-def toon_bericht(rol, tekst, bijlagen=None, schrift=False):
-    with st.chat_message(rol):
-        if bijlagen:
-            st.caption("📎 Bijlagen: " + ", ".join(bijlagen))
-        st.write(tekst)
-        if schrift:
+def toon_bericht(m):
+    content = m["content"]
+    with st.chat_message(m["role"]):
+        fotos = fotos_van(m) if m["role"] == "user" else []
+        if fotos:
+            st.image(fotos, width=160)
+        andere = [n for n in (m.get("bijlagen") or []) if n.lower().endswith(".pdf")]
+        if andere or (m.get("bijlagen") and not fotos):
+            st.caption("📎 " + ", ".join(andere or m["bijlagen"]))
+        if isinstance(content, dict) and content.get("type") == "image":
+            st.image(content["data"], caption=content.get("caption"))
+        else:
+            st.write(tekst_van(m))
+        if m.get("mislukt"):
+            st.warning("Niet meegestuurd (kon ik niet openen): " + ", ".join(m["mislukt"])
+                       + ". Probeer een nieuwe foto.")
+        if m.get("schrift"):
             st.caption("📒 Uitleg bewaard in je uitleg-schrift")
 
 
-# Hoofdscherm logica
+def profiel_gegevens():
+    """Wat we echt weten over haar voortgang, om aan de bijlesleraar te geven."""
+    try:
+        schrift = opslag.lees("schrift.json", []) or []
+    except Exception:
+        schrift = []
+    try:
+        index = opslag.lees("gesprekken/index.json", []) or []
+    except Exception:
+        index = []
+    return schrift, index
+
+
+# ---------------------------------------------------------------- hoofdscherm
 if current_topic == "📚 Mijn gesprekken":
-    st.title("📚 Mijn gesprekken")
+    st.header("📚 Mijn gesprekken")
     try:
         index = opslag.lees("gesprekken/index.json", []) or []
     except Exception as e:
@@ -513,30 +561,34 @@ if current_topic == "📚 Mijn gesprekken":
         st.error(f"De gesprekken konden niet geladen worden: {e}")
     if not index:
         st.info("Nog geen bewaarde gesprekken. Elk gesprek in de chat wordt vanzelf bewaard.")
-    zoek = st.text_input("🔎 Zoek in de titels", "") if len(index) > 5 else ""
-    for g in index:
-        if zoek and zoek.lower() not in g.get("titel", "").lower():
-            continue
-        with st.expander(f"{g.get('bijgewerkt', '')} — {g.get('titel', '')}"):
+    else:
+        zoek = st.text_input("🔎 Zoek een gesprek", "")
+        gefilterd = [g for g in index if zoek.lower() in g.get("titel", "").lower()]
+        if not gefilterd:
+            st.info("Geen gesprek gevonden met dat woord.")
+        else:
+            labels = [f"{g.get('bijgewerkt', '')} — {g.get('titel', '')}" for g in gefilterd]
+            keuze = st.selectbox("Kies een gesprek", range(len(gefilterd)), format_func=lambda i: labels[i])
+            g = gefilterd[keuze]
             try:
                 gesprek = opslag.lees(f"gesprekken/{g['id']}.json", {}) or {}
-            except Exception:
+            except Exception as e:
                 gesprek = {}
-            berichten = gesprek.get("berichten", [])
-            for b in berichten:
-                toon_bericht(b["role"], b["text"], b.get("bijlagen"), b.get("schrift"))
-            if berichten and st.button("💬 Verder praten in dit gesprek", key=f"verder_{g['id']}"):
-                st.session_state.messages = [
-                    {"role": b["role"], "content": b["text"], "bijlagen": b.get("bijlagen"), "schrift": b.get("schrift")}
-                    for b in berichten
-                ]
+                st.error(f"Dit gesprek kon niet geladen worden: {e}")
+            berichten = [{"role": b["role"], "content": b["text"], "bijlagen": b.get("bijlagen"),
+                          "foto_paden": b.get("foto_paden"), "schrift": b.get("schrift")}
+                         for b in gesprek.get("berichten", [])]
+            if berichten and st.button("💬 Verder praten in dit gesprek", type="primary"):
+                st.session_state.messages = berichten
                 st.session_state.gesprek_id = g["id"]
                 st.session_state.naar_chat = True
                 st.rerun()
+            for b in berichten:
+                toon_bericht(b)
     st.caption(f"Bewaard in: {opslag.uitleg}")
 
 elif current_topic == "📒 Mijn uitleg-schrift":
-    st.title("📒 Mijn uitleg-schrift")
+    st.header("📒 Mijn uitleg-schrift")
     st.markdown("Telkens als je een oefening **zelf juist oplost**, schrijft de bijlesleraar hier de kern en de uitleg op. Zo kan je het later terugvinden.")
     try:
         schrift = opslag.lees("schrift.json", []) or []
@@ -571,128 +623,211 @@ elif current_topic == "📒 Mijn uitleg-schrift":
                     st.rerun()
 
 elif current_topic == "📖 Hoe werkt het? (Handleiding)":
-    st.title("📖 Handleiding")
-    st.markdown("Deze app bewaart de behandelde lesmethodes, sterke vaardigheden en aandachtspunten permanent in een lokaal profiel.")
+    st.header("📖 Handleiding")
+    st.markdown(
+        "- **Vraag stellen:** typ onderaan in het tekstvak.\n"
+        "- **Foto of PDF toevoegen:** tik op het ＋-knopje links in het tekstvak, kies je foto en typ erbij wat je wil weten.\n"
+        "- **Terugkijken:** al je gesprekken staan bij *📚 Mijn gesprekken*, de uitleg van opgeloste oefeningen bij *📒 Mijn uitleg-schrift*.\n"
+        "- **Opnieuw beginnen:** *➕ Nieuw gesprek* in het zijmenu (≫ linksboven). Je oude gesprek blijft bewaard.\n\n"
+        "Meer uitleg vind je op de pagina *Hoe werkt het* in het menu."
+    )
+
 elif current_topic == "🎯 Adaptieve Foutenbank-toets":
-    st.title("🎯 Adaptieve Foutenbank-toets")
-    st.markdown("Deze toets is gebaseerd op de opgeslagen zwakke punten en methodieken uit eerdere sessies.")
-    
+    st.header("🎯 Adaptieve Foutenbank-toets")
+    st.markdown("Een korte oefentoets over wat je moeilijk vond of onlangs geoefend hebt.")
+    schrift, index = profiel_gegevens()
     weak_pts = groei_data.get("weak_points", [])
+    basis = weak_pts or sorted({n.get("onderwerp") for n in schrift if n.get("onderwerp")}) \
+        or [g.get("titel", "") for g in index[:10]]
     if weak_pts:
-        st.info(f"Bekende aandachtsgebieden: {', '.join(weak_pts)}")
+        st.info(f"Aandachtspunten: {', '.join(weak_pts)}")
+    elif basis:
+        st.info("Nog geen aandachtspunten bekend; de toets gaat over wat je onlangs geoefend hebt.")
     else:
-        st.warning("Nog geen specifieke zwakke punten geregistreerd.")
+        st.warning("Oefen eerst wat in de chat, dan kan ik een toets op maat maken.")
 
-    if st.button("Genereer Foutenbank-toets nu"):
+    if basis and st.button("Genereer toets nu", type="primary"):
         with st.spinner("De coach stelt een gerichte toets samen..."):
-            prompt_toets = f"Genereer een gerichte oefentoets van 3 pittige vragen voor een leerling in het 2de jaar ASO, gebaseerd op deze bekende zwakke punten: {weak_pts}. Volg exact de behandelde methodiek."
+            prompt_toets = ("Maak een korte oefentoets van 3 vragen voor een leerling in het 2de jaar ASO "
+                            f"over deze onderwerpen: {'; '.join(basis[:10])}. Geef alleen de vragen, "
+                            "genummerd, zonder oplossingen. Zeg erbij dat ze ze één voor één mag oplossen in de chat.")
             res = call_claude([{"role": "user", "content": prompt_toets}])
-            st.session_state.messages.append({"role": "assistant", "content": res})
-            st.success("Toets gegenereerd! Schakel terug naar 'Chat met Bijlesleraar' om te beginnen.")
+        nieuw_gesprek(res)
+        st.session_state.naar_chat = True
+        st.rerun()
+
 elif current_topic == "📈 Permanente Groei- & Methodiek-analyse":
-    st.title("📈 Permanente Groei- & Methodiek-analyse")
-    st.markdown("Overzicht van de opgeslagen leerstof, methodieken en voortgang over alle sessies heen.")
-    
-    st.subheader("📚 Behandelde Onderwerpen & Methodieken")
-    topics = groei_data.get("topics_covered", [])
-    if topics:
-        for t in topics:
-            st.markdown(f"- {t}")
-    else:
-        st.write("Nog geen onderwerpen vastgelegd.")
+    st.header("📈 Groei- & Methodiek-analyse")
+    st.markdown("Overzicht van de leerstof, sterke punten en aandachtspunten over alle sessies heen.")
 
-    st.subheader("💪 Geregistreerde Sterke Punten")
-    strongs = groei_data.get("strong_points", [])
-    if strongs:
-        for s in strongs:
-            st.markdown(f"- {s}")
-    else:
-        st.write("Nog geen sterke punten vastgelegd.")
+    for titel, sleutel, leeg in (
+        ("📚 Behandelde onderwerpen", "topics_covered", "Nog geen onderwerpen vastgelegd."),
+        ("💪 Sterke punten", "strong_points", "Nog geen sterke punten vastgelegd."),
+        ("📌 Aandachtspunten", "weak_points", "Nog geen aandachtspunten vastgelegd."),
+    ):
+        st.subheader(titel)
+        lijst = groei_data.get(sleutel, [])
+        if lijst:
+            st.markdown("\n".join(f"- {t}" for t in lijst))
+        else:
+            st.write(leeg)
 
-    st.subheader("📌 Uitgebreide Voortgangsrapportage")
+    st.subheader("📝 Voortgangsrapport")
     st.info(groei_data.get("growth_summary", "Nog geen analyse beschikbaar."))
-    
-    if st.button("Genereer bijgewerkte analyse"):
-        with st.spinner("De coach analyseert het permanente profiel..."):
-            analysis_prompt = (
-                "Analyseer de historisch opgeslagen gegevens van de leerling in het 2de jaar ASO en geef een professionele voortgangsrapportage "
-                "waarin de juiste methodieken, sterke punten en valkuilen worden vastgelegd."
-            )
-            res = call_claude([{"role": "user", "content": analysis_prompt}])
-            groei_data["growth_summary"] = res
-            save_persistent_groei(groei_data)
-            st.success("Analyse bijgewerkt!")
+
+    if st.button("Genereer bijgewerkte analyse", type="primary"):
+        schrift, index = profiel_gegevens()
+        if not schrift and not index:
+            st.warning("Er is nog te weinig om te analyseren. Oefen eerst wat in de chat.")
+        else:
+            with st.spinner("De coach analyseert je voortgang..."):
+                gegevens = {
+                    "aantal_vragen": groei_data.get("total_questions", 0),
+                    "juist_opgeloste_oefeningen": [
+                        {k: n.get(k, "") for k in ("datum", "onderwerp", "opgave", "kern")} for n in schrift[:40]],
+                    "recente_gesprekken": [
+                        {"datum": g.get("bijgewerkt", ""), "eerste_vraag": g.get("titel", "")} for g in index[:30]],
+                }
+                analysis_prompt = (
+                    "Hieronder staan de echte gegevens over een leerling van het 2de jaar ASO "
+                    "(juist opgeloste oefeningen en de eerste vraag van recente bijlesgesprekken).\n\n"
+                    + json.dumps(gegevens, ensure_ascii=False, indent=1) +
+                    "\n\nSchrijf een kort, bemoedigend voortgangsrapport (max. 150 woorden) in eenvoudig Vlaams, "
+                    "gericht aan de leerling. Verzin niets dat niet uit de gegevens blijkt. Zet daarna op het einde "
+                    "één blok in exact deze vorm (geldige JSON):\n"
+                    '<profiel>{"onderwerpen": ["..."], "sterk": ["..."], "aandacht": ["..."]}</profiel>\n'
+                    "Aandachtspunten zijn onderwerpen waar ze vaak vragen over stelt maar weinig oefeningen "
+                    "juist oploste. Houd elk punt kort (max. 6 woorden)."
+                )
+                res = call_claude([{"role": "user", "content": analysis_prompt}],
+                                  system="Je bent een vriendelijke wiskundecoach die voortgangsrapporten schrijft.")
+                rapport, profiel = haal_blok_eruit(res, "profiel")
+                groei_data["growth_summary"] = rapport
+                if profiel:
+                    groei_data["topics_covered"] = [str(x) for x in profiel.get("onderwerpen", [])][:30]
+                    groei_data["strong_points"] = [str(x) for x in profiel.get("sterk", [])][:15]
+                    groei_data["weak_points"] = [str(x) for x in profiel.get("aandacht", [])][:15]
+                save_persistent_groei(groei_data)
+            melding("Analyse bijgewerkt!")
             st.rerun()
+
+elif current_topic == "Functies & Grafieken (Rechten / Parabolen)":
+    with st.container(border=True):
+        figure_type = st.selectbox("Kies een figuur:", ["Rechte lijn", "Parabool ($ax^2+bx+c$)"])
+        if figure_type == "Rechte lijn":
+            a_line = st.number_input("Waarde van a:", value=2.0, key="a_line_input")
+            b_line = st.number_input("Waarde van b:", value=1.0, key="b_line_input")
+            if st.button("Genereer lijn"):
+                img_buf = plot_linear(a_line, b_line)
+                st.session_state.messages.append({"role": "assistant", "content": {"type": "image", "data": img_buf, "caption": f"Grafiek van y = {a_line}x + {b_line}"}})
+                st.session_state.naar_chat = True
+                st.rerun()
+        elif figure_type == "Parabool ($ax^2+bx+c$)":
+            a_para = st.number_input("Waarde van a:", value=1.0, key="a_para_input")
+            b_para = st.number_input("Waarde van b:", value=0.0, key="b_para_input")
+            c_para = st.number_input("Waarde van c:", value=0.0, key="c_para_input")
+            if st.button("Genereer parabool"):
+                img_buf = plot_parabola(a_para, b_para, c_para)
+                st.session_state.messages.append({"role": "assistant", "content": {"type": "image", "data": img_buf, "caption": f"Grafiek van y = {a_para}x² + {b_para}x + {c_para}"}})
+                st.session_state.naar_chat = True
+                st.rerun()
+
+elif current_topic == "Statistiek & Centrummaten":
+    with st.container(border=True):
+        nums_input = st.text_input("Getallen (komma-gescheiden):", "12, 15, 12, 18, 20")
+        if st.button("Bereken statistiek"):
+            try:
+                nums = [float(n.strip().replace(" ", "")) for n in nums_input.replace(";", ",").split(",") if n.strip()]
+                if nums:
+                    mean_val = np.mean(nums)
+                    median_val = np.median(nums)
+                    counts = Counter(nums)
+                    max_count = max(counts.values())
+                    modes = [k for k, v in counts.items() if v == max_count]
+                    res_text = (
+                        f"**Statistiek Resultaten:**\n"
+                        f"- Aantal: {len(nums)}\n"
+                        f"- Gemiddelde: {mean_val:.2f}\n"
+                        f"- Mediaan: {median_val}\n"
+                        f"- Modus: {', '.join(map(str, modes)) if max_count > 1 else 'Geen unieke modus'}"
+                    )
+                    st.success(res_text)
+            except Exception:
+                st.error("Vul geldige getallen in, gescheiden door komma's (kommagetallen met een punt, bv. 2.5).")
+
+elif current_topic == "Procenten & Verhoudingen (BTW / Prijs)":
+    with st.container(border=True):
+        calc_choice = st.selectbox("Type:", ["Procent van een getal", "Procentuele toename/afname"])
+        if calc_choice == "Procent van een getal":
+            base_val = st.number_input("Getal:", value=120.0, key="base_v")
+            pct_val = st.number_input("Percentage (%):", value=21.0, key="pct_v")
+            if st.button("Bereken deel"):
+                ans = (base_val * pct_val) / 100
+                st.info(f"{pct_val}% van het getal is **{ans:g}**")
+        else:
+            old_v = st.number_input("Oude waarde:", value=80.0, key="old_val")
+            new_v = st.number_input("Nieuwe waarde:", value=100.0, key="new_val")
+            if st.button("Bereken verandering"):
+                if old_v != 0:
+                    diff = ((new_v - old_v) / old_v) * 100
+                    st.info(f"Verschil: **{diff:+.2f}%**")
+                else:
+                    st.error("De oude waarde mag geen 0 zijn.")
+
+elif current_topic == "Algebra & Merkwaardige Producten":
+    with st.container(border=True):
+        st.latex(r"(a + b)^2 = a^2 + 2ab + b^2")
+        st.latex(r"(a - b)^2 = a^2 - 2ab + b^2")
+        st.latex(r"(a + b)(a - b) = a^2 - b^2")
+
 else:
     for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            content = msg["content"]
-            if msg.get("bijlagen"):
-                st.caption("📎 Bijlagen: " + ", ".join(msg["bijlagen"]))
-            if isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        st.write(part["text"])
-            elif isinstance(content, dict) and content.get("type") == "image":
-                st.image(content["data"], caption=content.get("caption"))
-            else:
-                st.write(content)
-            if msg.get("schrift"):
-                st.caption("📒 Uitleg bewaard in je uitleg-schrift")
+        toon_bericht(msg)
 
-    if prompt := st.chat_input("Schrijf hier je vraag of je uitwerking..."):
+    if any(m["role"] == "user" for m in st.session_state.messages):
+        if st.button("➕ Nieuw gesprek", key="nieuw_onder",
+                     help="Je huidige gesprek blijft bewaard bij 📚 Gesprekken."):
+            nieuw_gesprek("Oké, een nieuw gesprek! Je vorige gesprek staat bij 📚 Gesprekken. Wat pakken we aan?")
+            st.rerun()
+
+    invoer = st.chat_input(
+        "Typ je vraag…  (＋ = foto of PDF)",
+        accept_file="multiple",
+        file_type=BESTANDSTYPES,
+    )
+
+    if invoer:
+        prompt = (invoer.text or "").strip()
+        delen, fotos, namen, mislukt = verwerk_bestanden(invoer.files)
+
+        if not prompt and not delen:
+            if mislukt:
+                st.warning("Dit bestand kon ik niet openen: " + ", ".join(mislukt)
+                           + f". Maak een nieuwe foto, of stuur een kleinere PDF (max. {MAX_PDF_MB} MB).")
+            st.stop()  # niets bruikbaars om te versturen; de waarschuwing blijft staan
+        if not prompt:
+            prompt = "Kan je mijn foto bekijken?" if fotos else "Kan je mijn bestand bekijken?"
+
         groei_data["total_questions"] = groei_data.get("total_questions", 0) + 1
-        
-        for doc in st.session_state.active_documents:
-            if doc["name"] not in groei_data["topics_covered"]:
-                groei_data["topics_covered"].append(doc["name"])
-                
         save_persistent_groei(groei_data)
 
-        content_parts = []
-        for doc in st.session_state.active_documents:
-            if doc["type"].startswith("image/"):
-                content_parts.append({
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": doc["type"], "data": doc["data"]}
-                })
-            elif doc["type"] == "application/pdf":
-                content_parts.append({
-                    "type": "document",
-                    "source": {"type": "base64", "media_type": "application/pdf", "data": doc["data"]}
-                })
-        
-        content_parts.append({"type": "text", "text": prompt})
-        bijlage_namen = [d["name"] for d in st.session_state.active_documents]
-        st.session_state.messages.append({"role": "user", "content": content_parts, "bijlagen": bijlage_namen})
-        
-        with st.chat_message("user"):
-            if st.session_state.active_documents:
-                names = ", ".join([d["name"] for d in st.session_state.active_documents])
-                st.caption(f"📎 Bijlagen: {names}")
-            st.write(prompt)
-            
-        with st.spinner("De coach analyseert je uitwerking en methode..."):
-            api_messages = []
-            for i, m in enumerate(st.session_state.messages):
-                role = m["role"]
-                content = m["content"]
-                if isinstance(content, list):
-                    texts = [p["text"] for p in content if isinstance(p, dict) and p.get("type", "") == "text"]
-                    api_messages.append({"role": role, "content": " ".join(texts)})
-                elif isinstance(content, dict) and content.get("type") == "image":
-                    api_messages.append({"role": role, "content": f"[Afbeelding getoond: {content.get('caption')}]"})
-                else:
-                    api_messages.append({"role": role, "content": content})
-            api_messages[-1]["content"] = content_parts
-            response_text = call_claude(api_messages)
+        vraag = {"role": "user", "content": prompt}
+        if delen:
+            vraag.update({"delen": delen, "fotos": fotos, "bijlagen": namen})
+        if mislukt:
+            vraag["mislukt"] = mislukt
+        st.session_state.messages.append(vraag)
+        toon_bericht(vraag)
+
+        with st.spinner("De coach bekijkt je vraag..."):
+            response_text = call_claude(api_berichten())
             response_text, notitie = haal_schrift_eruit(response_text)
             in_schrift = bool(notitie) and bewaar_in_schrift(notitie)
 
-        with st.chat_message("assistant"):
-            st.write(response_text)
-        st.session_state.messages.append({"role": "assistant", "content": response_text, "schrift": in_schrift})
+        antwoord = {"role": "assistant", "content": response_text, "schrift": in_schrift}
+        st.session_state.messages.append(antwoord)
+        toon_bericht(antwoord)
         bewaar_gesprek()
         if in_schrift:
-            st.toast("📒 Bewaard in je uitleg-schrift!")
+            melding("Bewaard in je uitleg-schrift!", "📒")
         st.rerun()

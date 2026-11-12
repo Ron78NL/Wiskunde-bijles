@@ -1,5 +1,6 @@
-streamlit
+streamlit>=1.55
 matplotlib
 numpy
 certifi
 pillow
+pillow-heif
