@@ -173,6 +173,8 @@ def maak_bijlage(bytes_data):
     try:
         from PIL import Image, ImageOps
         img = Image.open(BytesIO(bytes_data))
+        # Grote JPEG's (bv. 50 MP Motorola) meteen verkleind inlezen: sneller en zuiniger
+        img.draft("RGB", (MAX_FOTO_ZIJDE, MAX_FOTO_ZIJDE))
         img = ImageOps.exif_transpose(img)  # telefoonfoto's rechtop zetten
         img = img.convert("RGB")
         img.thumbnail((MAX_FOTO_ZIJDE, MAX_FOTO_ZIJDE))
