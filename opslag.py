@@ -62,7 +62,8 @@ class Opslag:
         try:
             d = self._gh("GET", pad)
         except urllib.error.HTTPError as e:
-            if e.code == 404:
+            # 404 = bestand bestaat (nog) niet; 409 = de repo is nog helemaal leeg
+            if e.code in (404, 409):
                 self._sha.pop(pad, None)
                 return standaard
             raise
