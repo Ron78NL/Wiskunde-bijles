@@ -22,18 +22,21 @@ API_URL = "https://api.anthropic.com/v1/messages"
 GROEI_FILE = ROOT / "student_groei.json"
 
 def load_persistent_groei():
-    if GROEI_FILE.exists():
+    data = None
+    try:
+        data = opslag.lees("groei.json")
+    except Exception:
+        pass
+    if data is None and GROEI_FILE.exists():  # oud bestand van vroeger
         try:
             data = json.loads(GROEI_FILE.read_text(encoding="utf-8"))
-            if "weak_points" not in data:
-                data["weak_points"] = []
-            if "strong_points" not in data:
-                data["strong_points"] = []
-            if "topics_covered" not in data:
-                data["topics_covered"] = []
-            return data
         except Exception:
-            pass
+            data = None
+    if isinstance(data, dict):
+        data.setdefault("weak_points", [])
+        data.setdefault("strong_points", [])
+        data.setdefault("topics_covered", [])
+        return data
     return {
         "total_questions": 0, 
         "topics_covered": [], 
@@ -44,7 +47,7 @@ def load_persistent_groei():
 
 def save_persistent_groei(data):
     try:
-        GROEI_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+        opslag.schrijf("groei.json", data)
     except Exception:
         pass
 
@@ -106,6 +109,109 @@ def controleer_toegang():
 
 controleer_toegang()
 
+
+# ---------------------------------------------------------------- blijvende opslag
+from opslag import Opslag  # noqa: E402
+
+
+@st.cache_resource
+def _maak_opslag(token, repo):
+    return Opslag(token, repo, ROOT / "bewaard")
+
+
+opslag = _maak_opslag(_geheim("GITHUB_TOKEN"), _geheim("DATA_REPO"))
+
+
+def nu():
+    from datetime import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Europe/Brussels"))
+    except Exception:
+        return datetime.now()
+
+
+def bericht_als_tekst(m):
+    """Maakt van een chatbericht iets kleins om te bewaren (zonder foto-data)."""
+    content = m["content"]
+    if isinstance(content, list):
+        tekst = " ".join(p["text"] for p in content if isinstance(p, dict) and p.get("type") == "text")
+    elif isinstance(content, dict) and content.get("type") == "image":
+        tekst = f"[Grafiek: {content.get('caption')}]"
+    else:
+        tekst = str(content)
+    uit = {"role": m["role"], "text": tekst}
+    if m.get("bijlagen"):
+        uit["bijlagen"] = m["bijlagen"]
+    if m.get("schrift"):
+        uit["schrift"] = True
+    return uit
+
+
+def bewaar_gesprek():
+    """Bewaart het huidige gesprek (alleen als ze er zelf iets in gevraagd heeft)."""
+    berichten = [bericht_als_tekst(m) for m in st.session_state.messages]
+    vragen = [b for b in berichten if b["role"] == "user"]
+    if not vragen:
+        return
+    gid = st.session_state.gesprek_id
+    titel = vragen[0]["text"].strip() or "(foto)"
+    titel = titel if len(titel) <= 70 else titel[:67] + "…"
+    tijd = nu().strftime("%Y-%m-%d %H:%M")
+    try:
+        opslag.schrijf(f"gesprekken/{gid}.json", {"id": gid, "titel": titel, "bijgewerkt": tijd, "berichten": berichten})
+        index = [g for g in (opslag.lees("gesprekken/index.json", []) or []) if g.get("id") != gid]
+        index.insert(0, {"id": gid, "titel": titel, "bijgewerkt": tijd, "aantal": len(vragen)})
+        opslag.schrijf("gesprekken/index.json", index)
+    except Exception as e:
+        st.toast(f"Let op: het gesprek kon niet bewaard worden ({e}).", icon="⚠️")
+
+
+SCHRIFT_INSTRUCTIE = """
+
+## Het uitleg-schrift (heel belangrijk)
+De leerling heeft een uitleg-schrift in de app waarin ze later kan teruglezen hoe een soort oefening werkt.
+ALLEEN op het moment dat ze een oefening zelf juist heeft opgelost en jij bevestigt dat het klopt,
+zet je helemaal aan het einde van je bericht één blok in exact deze vorm (geldige JSON, op één regel):
+<schrift>{"onderwerp": "kort onderwerp, bv. Merkwaardige producten", "opgave": "de opgave zoals ze er stond", "kern": "de kernregel of het idee in één zin", "uitleg": "de stappen zoals zij ze gezet heeft, kort en duidelijk, met het juiste antwoord"}</schrift>
+Dit blok ziet ze niet in de chat; de app bewaart het in haar schrift. Omdat ze de oefening zelf al opgelost
+heeft, mag de uitleg de volledige uitwerking bevatten. Zet dit blok NOOIT als de oefening nog niet juist
+opgelost is, en nooit meer dan één keer per oefening.
+"""
+
+
+def haal_schrift_eruit(tekst):
+    """Haalt het <schrift>-blok uit het antwoord. Geeft (zichtbare tekst, notitie of None)."""
+    import re
+    notitie = None
+    m = re.search(r"<schrift>(.*?)(</schrift>|$)", tekst, re.S)
+    if m:
+        try:
+            ruw = m.group(1).strip()
+            ruw = ruw[ruw.find("{"): ruw.rfind("}") + 1]
+            d = json.loads(ruw)
+            if isinstance(d, dict) and (d.get("opgave") or d.get("uitleg")):
+                notitie = {k: str(d.get(k, "")).strip() for k in ("onderwerp", "opgave", "kern", "uitleg")}
+        except Exception:
+            notitie = None
+        tekst = (tekst[:m.start()] + tekst[m.end():]).strip()
+    return tekst, notitie
+
+
+def bewaar_in_schrift(notitie):
+    try:
+        schrift = opslag.lees("schrift.json", []) or []
+        notitie = dict(notitie)
+        notitie["datum"] = nu().strftime("%Y-%m-%d")
+        notitie["gesprek_id"] = st.session_state.gesprek_id
+        notitie["id"] = nu().strftime("%Y%m%d-%H%M%S")
+        schrift.insert(0, notitie)
+        opslag.schrijf("schrift.json", schrift)
+        return True
+    except Exception:
+        return False
+
+
 def ssl_context():
     try:
         import certifi
@@ -116,7 +222,7 @@ def ssl_context():
 def build_system_prompt():
     prompt_file = ROOT / "system-prompt.md"
     prompt = prompt_file.read_text(encoding="utf-8") if prompt_file.exists() else ""
-    return prompt
+    return prompt + SCHRIFT_INSTRUCTIE
 
 def call_claude(messages):
     key = ""
@@ -236,6 +342,25 @@ if "messages" not in st.session_state:
 if "active_documents" not in st.session_state:
     st.session_state.active_documents = []
 
+if "gesprek_id" not in st.session_state:
+    st.session_state.gesprek_id = nu().strftime("%Y%m%d-%H%M%S")
+
+MENU = [
+    "💬 Chat met Bijlesleraar",
+    "📚 Mijn gesprekken",
+    "📒 Mijn uitleg-schrift",
+    "📖 Hoe werkt het? (Handleiding)",
+    "🎯 Adaptieve Foutenbank-toets",
+    "📈 Permanente Groei- & Methodiek-analyse",
+    "Functies & Grafieken (Rechten / Parabolen)",
+    "Statistiek & Centrummaten",
+    "Procenten & Verhoudingen (BTW / Prijs)",
+    "Algebra & Merkwaardige Producten",
+]
+# Knoppen elders (bv. "Verder praten") kunnen zo terug naar de chat sturen
+if st.session_state.pop("naar_chat", False):
+    st.session_state.menu_keuze = MENU[0]
+
 groei_data = load_persistent_groei()
 
 with st.sidebar:
@@ -285,19 +410,7 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("🛠️ Modus & Hulpmiddel")
     
-    current_topic = st.selectbox(
-        "Kies wat je wilt doen:",
-        [
-            "💬 Chat met Bijlesleraar",
-            "📖 Hoe werkt het? (Handleiding)",
-            "🎯 Adaptieve Foutenbank-toets",
-            "📈 Permanente Groei- & Methodiek-analyse",
-            "Functies & Grafieken (Rechten / Parabolen)",
-            "Statistiek & Centrummaten",
-            "Procenten & Verhoudingen (BTW / Prijs)",
-            "Algebra & Merkwaardige Producten"
-        ]
-    )
+    current_topic = st.selectbox("Kies wat je wilt doen:", MENU, key="menu_keuze")
 
     if current_topic == "Functies & Grafieken (Rechten / Parabolen)":
         with st.expander("📈 Grafiek Generator", expanded=True):
@@ -372,16 +485,92 @@ with st.sidebar:
     st.markdown(f"**Aandachtspunten:** {len(groei_data.get('weak_points', []))}")
 
     st.markdown("---")
-    if st.button("🗑️ Wis hele gesprek"):
+    if st.button("➕ Nieuw gesprek", help="Dit gesprek blijft bewaard bij 'Mijn gesprekken'."):
         st.session_state.messages = [
-            {"role": "assistant", "content": "Gesetteld. We beginnen weer met een schone lei. Wat pakken we aan?"}
+            {"role": "assistant", "content": "Oké, een nieuw gesprek! Je vorige gesprek staat bij 📚 Mijn gesprekken. Wat pakken we aan?"}
         ]
+        st.session_state.gesprek_id = nu().strftime("%Y%m%d-%H%M%S")
         st.session_state.active_documents = []
         st.session_state.upload_sleutel += 1
         st.rerun()
 
+def toon_bericht(rol, tekst, bijlagen=None, schrift=False):
+    with st.chat_message(rol):
+        if bijlagen:
+            st.caption("📎 Bijlagen: " + ", ".join(bijlagen))
+        st.write(tekst)
+        if schrift:
+            st.caption("📒 Uitleg bewaard in je uitleg-schrift")
+
+
 # Hoofdscherm logica
-if current_topic == "📖 Hoe werkt het? (Handleiding)":
+if current_topic == "📚 Mijn gesprekken":
+    st.title("📚 Mijn gesprekken")
+    try:
+        index = opslag.lees("gesprekken/index.json", []) or []
+    except Exception as e:
+        index = []
+        st.error(f"De gesprekken konden niet geladen worden: {e}")
+    if not index:
+        st.info("Nog geen bewaarde gesprekken. Elk gesprek in de chat wordt vanzelf bewaard.")
+    zoek = st.text_input("🔎 Zoek in de titels", "") if len(index) > 5 else ""
+    for g in index:
+        if zoek and zoek.lower() not in g.get("titel", "").lower():
+            continue
+        with st.expander(f"{g.get('bijgewerkt', '')} — {g.get('titel', '')}"):
+            try:
+                gesprek = opslag.lees(f"gesprekken/{g['id']}.json", {}) or {}
+            except Exception:
+                gesprek = {}
+            berichten = gesprek.get("berichten", [])
+            for b in berichten:
+                toon_bericht(b["role"], b["text"], b.get("bijlagen"), b.get("schrift"))
+            if berichten and st.button("💬 Verder praten in dit gesprek", key=f"verder_{g['id']}"):
+                st.session_state.messages = [
+                    {"role": b["role"], "content": b["text"], "bijlagen": b.get("bijlagen"), "schrift": b.get("schrift")}
+                    for b in berichten
+                ]
+                st.session_state.gesprek_id = g["id"]
+                st.session_state.naar_chat = True
+                st.rerun()
+    st.caption(f"Bewaard in: {opslag.uitleg}")
+
+elif current_topic == "📒 Mijn uitleg-schrift":
+    st.title("📒 Mijn uitleg-schrift")
+    st.markdown("Telkens als je een oefening **zelf juist oplost**, schrijft de bijlesleraar hier de kern en de uitleg op. Zo kan je het later terugvinden.")
+    try:
+        schrift = opslag.lees("schrift.json", []) or []
+    except Exception as e:
+        schrift = []
+        st.error(f"Het schrift kon niet geladen worden: {e}")
+    if not schrift:
+        st.info("Je schrift is nog leeg. Los een oefening op in de chat, dan verschijnt de uitleg hier.")
+    else:
+        onderwerpen = sorted({n.get("onderwerp") or "Overig" for n in schrift})
+        c1, c2 = st.columns(2)
+        keuze = c1.selectbox("Onderwerp", ["Alle onderwerpen"] + onderwerpen)
+        zoek = c2.text_input("🔎 Zoek", "")
+        for i, n in enumerate(schrift):
+            if keuze != "Alle onderwerpen" and (n.get("onderwerp") or "Overig") != keuze:
+                continue
+            alles = " ".join(str(v) for v in n.values()).lower()
+            if zoek and zoek.lower() not in alles:
+                continue
+            with st.expander(f"{n.get('onderwerp') or 'Overig'} — {n.get('opgave', '')[:60]}"):
+                st.markdown(f"**Opgave:** {n.get('opgave', '')}")
+                st.success(f"**Kern:** {n.get('kern', '')}")
+                st.markdown("**Uitleg:**")
+                st.write(n.get("uitleg", ""))
+                st.caption(f"Bewaard op {n.get('datum', '')}")
+                if st.button("🗑️ Uit mijn schrift halen", key=f"weg_{n.get('id', i)}"):
+                    schrift.pop(i)
+                    try:
+                        opslag.schrijf("schrift.json", schrift)
+                    except Exception as e:
+                        st.error(f"Lukte niet: {e}")
+                    st.rerun()
+
+elif current_topic == "📖 Hoe werkt het? (Handleiding)":
     st.title("📖 Handleiding")
     st.markdown("Deze app bewaart de behandelde lesmethodes, sterke vaardigheden en aandachtspunten permanent in een lokaal profiel.")
 elif current_topic == "🎯 Adaptieve Foutenbank-toets":
@@ -438,6 +627,8 @@ else:
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             content = msg["content"]
+            if msg.get("bijlagen"):
+                st.caption("📎 Bijlagen: " + ", ".join(msg["bijlagen"]))
             if isinstance(content, list):
                 for part in content:
                     if isinstance(part, dict) and part.get("type") == "text":
@@ -446,6 +637,8 @@ else:
                 st.image(content["data"], caption=content.get("caption"))
             else:
                 st.write(content)
+            if msg.get("schrift"):
+                st.caption("📒 Uitleg bewaard in je uitleg-schrift")
 
     if prompt := st.chat_input("Schrijf hier je vraag of je uitwerking..."):
         groei_data["total_questions"] = groei_data.get("total_questions", 0) + 1
@@ -470,7 +663,8 @@ else:
                 })
         
         content_parts.append({"type": "text", "text": prompt})
-        st.session_state.messages.append({"role": "user", "content": content_parts})
+        bijlage_namen = [d["name"] for d in st.session_state.active_documents]
+        st.session_state.messages.append({"role": "user", "content": content_parts, "bijlagen": bijlage_namen})
         
         with st.chat_message("user"):
             if st.session_state.active_documents:
@@ -492,8 +686,13 @@ else:
                     api_messages.append({"role": role, "content": content})
             api_messages[-1]["content"] = content_parts
             response_text = call_claude(api_messages)
-            
+            response_text, notitie = haal_schrift_eruit(response_text)
+            in_schrift = bool(notitie) and bewaar_in_schrift(notitie)
+
         with st.chat_message("assistant"):
             st.write(response_text)
-        st.session_state.messages.append({"role": "assistant", "content": response_text})
+        st.session_state.messages.append({"role": "assistant", "content": response_text, "schrift": in_schrift})
+        bewaar_gesprek()
+        if in_schrift:
+            st.toast("📒 Bewaard in je uitleg-schrift!")
         st.rerun()

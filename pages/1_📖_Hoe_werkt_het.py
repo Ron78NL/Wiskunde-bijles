@@ -34,4 +34,11 @@ In de zijbalk kun je het **huidige onderwerp** kiezen waar je mee bezig bent. De
 2. **Typ je poging:** Zet in de chat wat je al geprobeerd hebt (bijvoorbeeld: *"Ik denk dat ik hier de haakjes moet wegwerken, maar ik loop vast"*).
 3. **Check en leer:** Gebruik de rekentools in de zijbalk om je eigen antwoorden te controleren.
 4. **Test je kennis:** Klik in de zijbalk op de knop om een korte oefentoets te maken en te kijken of je het echt snapt!
+
+---
+
+### 📚 Terugkijken
+* **Mijn gesprekken:** elk gesprek wordt vanzelf bewaard. Kies in de zijbalk *📚 Mijn gesprekken* om het terug te lezen, of tik op *Verder praten* om verder te gaan waar je gebleven was.
+* **Mijn uitleg-schrift:** heb je een oefening **zelf juist opgelost**? Dan schrijft de bijlesleraar de kern en de uitleg voor je op. Je vindt alles terug bij *📒 Mijn uitleg-schrift*, per onderwerp en met een zoekvakje. Handig om voor een toets te herhalen!
+* **Nieuw gesprek:** met *➕ Nieuw gesprek* begin je opnieuw. Je oude gesprek blijft gewoon bewaard.
 """)

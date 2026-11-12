@@ -14,3 +14,6 @@ werkpunten.md
 public/index *.html
 __pycache__/
 .DS_Store
+
+# Lokaal bewaarde gesprekken en uitleg-schrift
+bewaard/
