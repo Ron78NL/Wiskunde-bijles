@@ -132,9 +132,13 @@ def call_claude(messages):
     if not key:
         return "Fout: Geen API-sleutel gevonden. Controleer of de ANTHROPIC_API_KEY is ingesteld in de Streamlit Secrets."
         
+    # Het model denkt eerst (onzichtbaar) na, en dat denkwerk telt mee in max_tokens.
+    # Met een te lage limiet was die op vóór het antwoord kwam: dan bleef de ballon leeg.
+    # Effort "low": korte bijles-antwoorden hebben geen lang nadenken nodig.
     payload = json.dumps({
         "model": MODEL,
-        "max_tokens": 1200,
+        "max_tokens": 8000,
+        "output_config": {"effort": "low"},
         "system": build_system_prompt(),
         "messages": messages
     }).encode("utf-8")
@@ -151,14 +155,41 @@ def call_claude(messages):
     )
     
     try:
-        with urllib.request.urlopen(req, timeout=90, context=ssl_context()) as resp:
+        with urllib.request.urlopen(req, timeout=180, context=ssl_context()) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            return "\n".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+        tekst = "\n".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text").strip()
+        if not tekst:
+            return ("Oei, ik kreeg geen antwoord klaar. Stel je vraag nog eens, "
+                    "of maak ze wat kleiner (bijvoorbeeld één oefening tegelijk).")
+        return tekst
     except urllib.error.HTTPError as e:
         error_detail = e.read().decode("utf-8", "ignore")
         return f"API Fout ({e.code}): {error_detail}"
     except Exception as e:
         return f"Er ging iets mis bij het verbinden met de bijlesleraar: {e}"
+
+MAX_FOTO_ZIJDE = 1600  # pixels; groter heeft geen zin en maakt het traag/duur
+
+
+def maak_bijlage(bytes_data):
+    """Geeft (media_type, base64) terug, of None als het bestand onleesbaar is.
+    Het type wordt uit de inhoud bepaald (niet uit de bestandsnaam), en foto's
+    worden verkleind: een telefoonfoto kan groter zijn dan wat de API aanneemt."""
+    import base64
+    if bytes_data[:5] == b"%PDF-":
+        return "application/pdf", base64.b64encode(bytes_data).decode("utf-8")
+    try:
+        from PIL import Image, ImageOps
+        img = Image.open(BytesIO(bytes_data))
+        img = ImageOps.exif_transpose(img)  # telefoonfoto's rechtop zetten
+        img = img.convert("RGB")
+        img.thumbnail((MAX_FOTO_ZIJDE, MAX_FOTO_ZIJDE))
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return "image/jpeg", base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception:
+        return None
+
 
 # Vaste Python-logica voor grafieken
 def plot_linear(a, b):
@@ -209,33 +240,46 @@ groei_data = load_persistent_groei()
 
 with st.sidebar:
     st.header("📂 Oefeningen of Toetsen")
+    # Nieuwe sleutel = leeg upload-vak (anders zette Streamlit de oude bestanden er meteen terug)
+    st.session_state.setdefault("upload_sleutel", 0)
     uploaded_files = st.file_uploader(
-        "Upload hier meerdere foto's of PDF's", 
-        type=["jpg", "jpeg", "png", "webp", "pdf"], 
-        accept_multiple_files=True
+        "Upload hier meerdere foto's of PDF's",
+        type=["jpg", "jpeg", "png", "webp", "pdf"],
+        accept_multiple_files=True,
+        key=f"upload_{st.session_state.upload_sleutel}",
     )
-    
+
     if uploaded_files:
-        import base64
         docs_list = []
         schoolwerk_dir = ROOT / "schoolwerk"
         schoolwerk_dir.mkdir(exist_ok=True)
-        
+
         for uploaded_file in uploaded_files:
             bytes_data = uploaded_file.getvalue()
-            b64_data = base64.b64encode(bytes_data).decode("utf-8")
-            (schoolwerk_dir / uploaded_file.name).write_bytes(bytes_data)
+            try:
+                (schoolwerk_dir / uploaded_file.name).write_bytes(bytes_data)
+            except Exception:
+                pass
+            bijlage = maak_bijlage(bytes_data)
+            if bijlage is None:
+                st.warning(f"'{uploaded_file.name}' kon ik niet lezen. Probeer een andere foto of PDF.")
+                continue
+            media_type, b64_data = bijlage
             docs_list.append({
                 "name": uploaded_file.name,
-                "type": uploaded_file.type,
+                "type": media_type,
                 "data": b64_data
             })
         st.session_state.active_documents = docs_list
-        st.success(f"{len(uploaded_files)} bestand(en) geladen.")
-    
+        if docs_list:
+            st.success(f"{len(docs_list)} bestand(en) geladen.")
+    else:
+        st.session_state.active_documents = []
+
     if st.session_state.active_documents:
         if st.button("🗑️ Alle bijlagen wissen"):
             st.session_state.active_documents = []
+            st.session_state.upload_sleutel += 1
             st.rerun()
 
     st.markdown("---")
@@ -333,6 +377,7 @@ with st.sidebar:
             {"role": "assistant", "content": "Gesetteld. We beginnen weer met een schone lei. Wat pakken we aan?"}
         ]
         st.session_state.active_documents = []
+        st.session_state.upload_sleutel += 1
         st.rerun()
 
 # Hoofdscherm logica

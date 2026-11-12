@@ -72,8 +72,10 @@ def call_claude(messages):
     payload = json.dumps(
         {
             "model": MODEL, 
-            "max_tokens": 1000, 
-            "system": build_system_prompt(), 
+            # Het verborgen denkwerk telt mee in max_tokens; te laag = lege ballon.
+            "max_tokens": 8000,
+            "output_config": {"effort": "low"},
+            "system": build_system_prompt(),
             "messages": messages
         }
     ).encode("utf-8")
@@ -88,9 +90,13 @@ def call_claude(messages):
             "anthropic-version": "2023-06-01",
         },
     )
-    with urllib.request.urlopen(req, timeout=90, context=ssl_context()) as resp:
+    with urllib.request.urlopen(req, timeout=180, context=ssl_context()) as resp:
         data = json.loads(resp.read().decode("utf-8"))
-    return "\n".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+    tekst = "\n".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text").strip()
+    if not tekst:
+        return ("Oei, ik kreeg geen antwoord klaar. Stel je vraag nog eens, "
+                "of maak ze wat kleiner (bijvoorbeeld één oefening tegelijk).")
+    return tekst
 
 
 class Handler(BaseHTTPRequestHandler):
