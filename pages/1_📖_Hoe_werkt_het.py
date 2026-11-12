@@ -37,6 +37,14 @@ Bovenaan in de app tik je op **🧰 Meer** en kies je het onderwerp waar je mee 
 
 ---
 
+### 🆘 Vast? Toets op komst?
+* **Ik zit echt vast:** tik op de knop onder de chat. De bijlesleraar doet dan een gelijkaardige oefening met andere getallen helemaal voor, en daarna probeer jij je eigen oefening opnieuw.
+* **Ik heb een toets:** tik in een nieuw gesprek op *📅 Ik heb een toets*, vul het onderwerp en de datum in, en je krijgt een kort oefenplan. Tot de toets zie je bovenaan een knop *Oefen nu*.
+* **Overhoor me:** de bijlesleraar stelt je een vraag over iets wat je onlangs geoefend hebt.
+* **Openen zonder wachtwoord:** onder *🧰 Meer → Hoe werkt het?* staat je persoonlijke link. Zet die op je beginscherm.
+
+---
+
 ### 📚 Terugkijken
 * **Mijn gesprekken:** elk gesprek wordt vanzelf bewaard. Tik bovenaan op *📚 Gesprekken* om het terug te lezen, of tik op *Verder praten* om verder te gaan waar je gebleven was.
 * **Mijn uitleg-schrift:** heb je een oefening **zelf juist opgelost**? Dan schrijft de bijlesleraar de kern en de uitleg voor je op. Je vindt alles terug bij *📒 Schrift*, per onderwerp en met een zoekvakje. Handig om voor een toets te herhalen!

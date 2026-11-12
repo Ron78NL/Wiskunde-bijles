@@ -63,6 +63,17 @@ def _geheim(naam):
 MODEL = _geheim("MODEL") or "claude-haiku-5-5"
 
 
+def link_code():
+    """Geheime code voor de persoonlijke inloglink, afgeleid van het wachtwoord.
+    Verander je APP_PASSWORD, dan werkt een oude link niet meer."""
+    import hmac
+    import hashlib
+    wachtwoord = _geheim("APP_PASSWORD")
+    if not wachtwoord:
+        return ""
+    return hmac.new(wachtwoord.encode(), b"inloglink-wiskunde", hashlib.sha256).hexdigest()[:24]
+
+
 def controleer_toegang():
     import hmac
     import time
@@ -74,6 +85,11 @@ def controleer_toegang():
         st.error("Er is nog geen wachtwoord ingesteld (APP_PASSWORD in de Secrets).")
         st.stop()
     if st.session_state.get("ingelogd"):
+        return
+    # Persoonlijke link (?k=...) vanaf het beginscherm: meteen binnen, geen wachtwoord typen
+    code = str(st.query_params.get("k", ""))
+    if code and hmac.compare_digest(code.encode(), link_code().encode()):
+        st.session_state.ingelogd = True
         return
     st.title("📐 Wiskundebijles")
     pogingen = st.session_state.get("pogingen", 0)
@@ -316,15 +332,32 @@ def haal_schrift_eruit(tekst):
     return tekst, None
 
 
+def lees_lijst(pad):
+    """Leest een lijst (schrift, toetsen) één keer per bezoek; daarna uit het geheugen."""
+    cache = st.session_state.setdefault("lijsten", {})
+    if pad not in cache:
+        try:
+            cache[pad] = opslag.lees(pad, []) or []
+        except Exception as e:
+            print(f"{pad} niet geladen: {e}", file=sys.stderr)
+            return []
+    return cache[pad]
+
+
+def schrijf_lijst(pad, lijst):
+    opslag.schrijf(pad, lijst)
+    st.session_state.setdefault("lijsten", {})[pad] = lijst
+
+
 def bewaar_in_schrift(notitie):
     try:
-        schrift = opslag.lees("schrift.json", []) or []
+        schrift = list(lees_lijst("schrift.json"))
         notitie = dict(notitie)
         notitie["datum"] = nu().strftime("%Y-%m-%d")
         notitie["gesprek_id"] = st.session_state.gesprek_id
         notitie["id"] = nu().strftime("%Y%m%d-%H%M%S")
         schrift.insert(0, notitie)
-        opslag.schrijf("schrift.json", schrift)
+        schrijf_lijst("schrift.json", schrift)
         return True
     except Exception as e:
         print(f"Schrift niet bewaard: {e}", file=sys.stderr)
@@ -542,10 +575,7 @@ def toon_bericht(m):
 
 def profiel_gegevens():
     """Wat we echt weten over haar voortgang, om aan de bijlesleraar te geven."""
-    try:
-        schrift = opslag.lees("schrift.json", []) or []
-    except Exception:
-        schrift = []
+    schrift = lees_lijst("schrift.json")
     try:
         index = opslag.lees("gesprekken/index.json", []) or []
     except Exception:
@@ -592,11 +622,7 @@ if current_topic == "📚 Mijn gesprekken":
 elif current_topic == "📒 Mijn uitleg-schrift":
     st.header("📒 Mijn uitleg-schrift")
     st.markdown("Telkens als je een oefening **zelf juist oplost**, schrijft de bijlesleraar hier de kern en de uitleg op. Zo kan je het later terugvinden.")
-    try:
-        schrift = opslag.lees("schrift.json", []) or []
-    except Exception as e:
-        schrift = []
-        st.error(f"Het schrift kon niet geladen worden: {e}")
+    schrift = list(lees_lijst("schrift.json"))
     if not schrift:
         st.info("Je schrift is nog leeg. Los een oefening op in de chat, dan verschijnt de uitleg hier.")
     else:
@@ -619,7 +645,7 @@ elif current_topic == "📒 Mijn uitleg-schrift":
                 if st.button("🗑️ Uit mijn schrift halen", key=f"weg_{n.get('id', i)}"):
                     schrift.pop(i)
                     try:
-                        opslag.schrijf("schrift.json", schrift)
+                        schrijf_lijst("schrift.json", schrift)
                     except Exception as e:
                         st.error(f"Lukte niet: {e}")
                     st.rerun()
@@ -630,9 +656,26 @@ elif current_topic == "📖 Hoe werkt het? (Handleiding)":
         "- **Vraag stellen:** typ onderaan in het tekstvak.\n"
         "- **Foto of PDF toevoegen:** tik op het ＋-knopje links in het tekstvak, kies je foto en typ erbij wat je wil weten.\n"
         "- **Terugkijken:** al je gesprekken staan bij *📚 Mijn gesprekken*, de uitleg van opgeloste oefeningen bij *📒 Mijn uitleg-schrift*.\n"
-        "- **Opnieuw beginnen:** *➕ Nieuw gesprek* in het zijmenu (≫ linksboven). Je oude gesprek blijft bewaard.\n\n"
-        "Meer uitleg vind je op de pagina *Hoe werkt het* in het menu."
+        "- **Vastgelopen?** Tik op *🆘 Ik zit echt vast*: dan doet de bijlesleraar een gelijkaardige oefening voor.\n"
+        "- **Toets op komst?** Tik in een nieuw gesprek op *📅 Ik heb een toets*.\n"
+        "- **Opnieuw beginnen:** *➕ Nieuw gesprek* onder de chat. Je oude gesprek blijft bewaard.\n\n"
+        "Meer uitleg vind je op de pagina *Hoe werkt het* in het zijmenu (≫ linksboven)."
     )
+    if link_code():
+        st.subheader("📲 Openen zonder wachtwoord")
+        try:
+            basis = str(st.context.url).split("?")[0].rstrip("/")
+        except Exception:
+            basis = ""
+        basis = basis or "https://wiskunde-bijles-dochter.streamlit.app"
+        st.markdown("Met deze persoonlijke link kom je meteen binnen. Zet hem op het beginscherm van je telefoon:")
+        st.code(f"{basis}/?k={link_code()}", language=None)
+        st.markdown(
+            "1. Kopieer de link (knopje rechts) en open hem in **Chrome**.\n"
+            "2. Tik op **⋮** rechtsboven → **Toevoegen aan startscherm**.\n\n"
+            "Deel deze link met niemand: wie hem heeft, kan binnen. Lekt hij toch uit, "
+            "laat papa dan het wachtwoord veranderen; dan werkt de oude link niet meer."
+        )
 
 elif current_topic == "🎯 Adaptieve Foutenbank-toets":
     st.header("🎯 Adaptieve Foutenbank-toets")
@@ -783,11 +826,101 @@ elif current_topic == "Algebra & Merkwaardige Producten":
         st.latex(r"(a + b)(a - b) = a^2 - b^2")
 
 else:
+    from datetime import date, timedelta
+    vandaag = nu().date()
+    schrift = lees_lijst("schrift.json")
+    onderwerpen_recent = list(dict.fromkeys(n.get("onderwerp") for n in schrift if n.get("onderwerp")))[:5]
+    actie = None  # tekst die via een knop verstuurd wordt, alsof ze hem zelf typte
+
+    # --- vooruitgang: kort en niet kinderachtig
+    if schrift:
+        week = sum(1 for n in schrift if n.get("datum", "") >= (vandaag - timedelta(days=6)).isoformat())
+        if week:
+            st.caption(f"💪 Deze week {week} oefening{'en' if week != 1 else ''} zelf opgelost · {len(schrift)} in totaal")
+        else:
+            st.caption(f"💪 Al {len(schrift)} oefening{'en' if len(schrift) != 1 else ''} zelf opgelost")
+
+    # --- toetsen die eraan komen
+    toetsen = [t for t in lees_lijst("toetsen.json") if t.get("datum", "") >= vandaag.isoformat()]
+    for i, t in enumerate(sorted(toetsen, key=lambda t: t["datum"])[:2]):
+        dagen = (date.fromisoformat(t["datum"]) - vandaag).days
+        wanneer = "vandaag" if dagen == 0 else "morgen" if dagen == 1 else f"over {dagen} dagen"
+        c1, c2 = st.columns([3, 2], vertical_alignment="center")
+        c1.markdown(f"📅 **Toets {t['onderwerp']}** — {wanneer}")
+        if c2.button("Oefen nu", key=f"oefen_{t['datum']}_{i}", type="primary"):
+            actie = (f"📅 Oefenen voor mijn toets over {t['onderwerp']} ({wanneer}). "
+                     "Geef me één oefenvraag van toetsniveau.")
+
     for msg in st.session_state.messages:
         toon_bericht(msg)
 
-    if any(m["role"] == "user" for m in st.session_state.messages):
-        if st.button("➕ Nieuw gesprek", key="nieuw_onder",
+    heeft_vragen = any(m["role"] == "user" for m in st.session_state.messages)
+
+    if not heeft_vragen and not st.session_state.get("toets_formulier"):
+        # --- snelstartknoppen in een leeg gesprek
+        def _snel_gekozen():
+            st.session_state.snel_actie = st.session_state.get("snel")
+            st.session_state.snel = None
+
+        st.pills("Snel starten", ["📷 Help met mijn huiswerk", "🧠 Overhoor me", "❓ Leg iets uit",
+                                  "📅 Ik heb een toets"],
+                 key="snel", on_change=_snel_gekozen, label_visibility="collapsed")
+        keuze = st.session_state.pop("snel_actie", None)
+        if keuze == "📷 Help met mijn huiswerk":
+            st.session_state.messages.append({"role": "assistant", "content":
+                "Top! Tik op **＋** links in het tekstvak, kies een foto van je oefening en typ erbij wat je niet snapt."})
+            st.rerun()
+        elif keuze == "❓ Leg iets uit":
+            st.session_state.messages.append({"role": "assistant", "content":
+                "Zeker! Welk onderwerp of welk woord wil je uitgelegd krijgen? Typ het maar."})
+            st.rerun()
+        elif keuze == "🧠 Overhoor me":
+            if onderwerpen_recent:
+                over = ", ".join(onderwerpen_recent[:-1]) + (" of " if len(onderwerpen_recent) > 1 else "") \
+                    + onderwerpen_recent[-1]
+                actie = f"🧠 Overhoor me over {over.lower()}! Kies er één uit en stel me één oefenvraag."
+            else:
+                actie = "🧠 Overhoor me! Stel me één oefenvraag over de leerstof van het 2de jaar."
+        elif keuze == "📅 Ik heb een toets":
+            st.session_state.toets_formulier = True
+            st.rerun()
+
+    if st.session_state.get("toets_formulier"):
+        # --- toetsvoorbereiding
+        with st.form("toets"):
+            st.markdown("**📅 Over welke toets gaat het?**")
+            onderwerp = st.text_input("Onderwerp", placeholder="bv. merkwaardige producten")
+            datum = st.date_input("Wanneer?", value=vandaag + timedelta(days=3), min_value=vandaag,
+                                  format="DD/MM/YYYY")
+            c1, c2 = st.columns(2)
+            klaar = c1.form_submit_button("Maak mijn oefenplan", type="primary")
+            stop = c2.form_submit_button("Annuleer")
+        if stop:
+            st.session_state.toets_formulier = False
+            st.rerun()
+        if klaar:
+            if not onderwerp.strip():
+                st.warning("Vul eerst het onderwerp in.")
+            else:
+                st.session_state.toets_formulier = False
+                alle = [t for t in lees_lijst("toetsen.json") if t.get("datum", "") >= vandaag.isoformat()]
+                alle.append({"onderwerp": onderwerp.strip(), "datum": datum.isoformat()})
+                try:
+                    schrijf_lijst("toetsen.json", alle)
+                except Exception as e:
+                    print(f"Toets niet bewaard: {e}", file=sys.stderr)
+                dagen = (datum - vandaag).days
+                actie = (f"📅 Ik heb {'vandaag' if dagen == 0 else 'morgen' if dagen == 1 else f'over {dagen} dagen'} "
+                         f"een toets over {onderwerp.strip()}. Maak een kort oefenplan tot dan "
+                         "(hooguit 4 korte punten) en stel me meteen de eerste oefenvraag.")
+
+    if heeft_vragen:
+        c1, c2 = st.columns(2)
+        if c1.button("🆘 Ik zit echt vast", width="stretch",
+                     help="De bijlesleraar doet een gelijkaardige oefening met andere getallen voor."):
+            actie = ("🆘 Ik zit echt vast. Kan je een gelijkaardige oefening met andere getallen "
+                     "stap voor stap voordoen? Dan probeer ik daarna mijn eigen oefening opnieuw.")
+        if c2.button("➕ Nieuw gesprek", key="nieuw_onder", width="stretch",
                      help="Je huidige gesprek blijft bewaard bij 📚 Gesprekken."):
             nieuw_gesprek("Oké, een nieuw gesprek! Je vorige gesprek staat bij 📚 Gesprekken. Wat pakken we aan?")
             st.rerun()
@@ -798,6 +931,7 @@ else:
         file_type=BESTANDSTYPES,
     )
 
+    vraag = None
     if invoer:
         prompt = (invoer.text or "").strip()
         delen, fotos, namen, mislukt = verwerk_bestanden(invoer.files)
@@ -809,15 +943,18 @@ else:
             st.stop()  # niets bruikbaars om te versturen; de waarschuwing blijft staan
         if not prompt:
             prompt = "Kan je mijn foto bekijken?" if fotos else "Kan je mijn bestand bekijken?"
-
-        groei_data["total_questions"] = groei_data.get("total_questions", 0) + 1
-        save_persistent_groei(groei_data)
-
         vraag = {"role": "user", "content": prompt}
         if delen:
             vraag.update({"delen": delen, "fotos": fotos, "bijlagen": namen})
         if mislukt:
             vraag["mislukt"] = mislukt
+    elif actie:
+        vraag = {"role": "user", "content": actie}
+
+    if vraag:
+        groei_data["total_questions"] = groei_data.get("total_questions", 0) + 1
+        save_persistent_groei(groei_data)
+
         st.session_state.messages.append(vraag)
         toon_bericht(vraag)
 
