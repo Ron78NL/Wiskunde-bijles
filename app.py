@@ -74,6 +74,24 @@ def link_code():
     return hmac.new(wachtwoord.encode(), b"inloglink-wiskunde", hashlib.sha256).hexdigest()[:24]
 
 
+# Codewoord voor papa: inloggen zonder opwarmer (om de app te bekijken of te testen).
+# Alleen de 'vingerafdruk' (hash) staat hier, niet het woord zelf. Een ander woord kiezen?
+# Zet OUDER_CODE = "jouwwoord" in de Secrets; dat gaat dan voor.
+OUDER_HASH = "4c518fae66f4a805011328795a3a1e6d75e606c2cb3e6f1ee4ea76f2ac1a47ea"
+
+
+def is_ouder_code(invoer):
+    import hmac
+    import hashlib
+    invoer = (invoer or "").strip()
+    if not invoer:
+        return False
+    eigen = _geheim("OUDER_CODE")
+    if eigen:
+        return hmac.compare_digest(invoer.encode(), eigen.encode())
+    return hmac.compare_digest(hashlib.sha256(("wiskunde-ouder:" + invoer).encode()).hexdigest(), OUDER_HASH)
+
+
 def controleer_toegang():
     import hmac
     import time
@@ -84,6 +102,10 @@ def controleer_toegang():
             return
         st.error("Er is nog geen wachtwoord ingesteld (APP_PASSWORD in de Secrets).")
         st.stop()
+    # Ouder-link: ...?ouder=codewoord  -> binnen, zonder opwarmer
+    if is_ouder_code(str(st.query_params.get("ouder", ""))):
+        st.session_state.ingelogd = True
+        st.session_state.ouder = True
     if st.session_state.get("ingelogd"):
         return
     # Persoonlijke link (?k=...) vanaf het beginscherm: meteen binnen, geen wachtwoord typen
@@ -99,6 +121,11 @@ def controleer_toegang():
     with st.form("login"):
         invoer = st.text_input("Wachtwoord", type="password")
         if st.form_submit_button("Inloggen", type="primary"):
+            if is_ouder_code(invoer):
+                st.session_state.ingelogd = True
+                st.session_state.ouder = True
+                st.session_state.pogingen = 0
+                st.rerun()
             if hmac.compare_digest(invoer.encode(), wachtwoord.encode()):
                 st.session_state.ingelogd = True
                 st.session_state.pogingen = 0
@@ -633,7 +660,7 @@ def profiel_gegevens():
 def opwarmer_nodig():
     if st.session_state.get("opw_extra"):
         return True
-    if st.session_state.get("opwarmer_klaar"):
+    if st.session_state.get("opwarmer_klaar") or st.session_state.get("ouder"):
         return False
     laatst = lees_herhaling().get("laatste_opwarmer")
     if laatst:
