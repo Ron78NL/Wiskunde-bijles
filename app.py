@@ -133,6 +133,48 @@ def nu():
         return datetime.now()
 
 
+import herhaling as hh  # noqa: E402
+
+OPWARMER_AANTAL = 3      # zoveel vragen over oude leerstof bij het begin van elke studiesessie
+OPWARMER_PAUZE_UUR = 3   # binnen zoveel uur na een opwarmer hoeft ze er geen nieuwe te doen
+
+
+def lees_herhaling():
+    """Voortgang van de herhaalkaarten (doosjes), één keer per bezoek opgehaald."""
+    if "herhaling" not in st.session_state:
+        try:
+            d = opslag.lees("herhaling.json", {}) or {}
+        except Exception as e:
+            print(f"herhaling.json niet geladen: {e}", file=sys.stderr)
+            d = {}
+        if not isinstance(d, dict):
+            d = {}
+        d.setdefault("kaarten", {})
+        d.setdefault("eigen", [])
+        d.setdefault("log", [])
+        st.session_state.herhaling = d
+    return st.session_state.herhaling
+
+
+def bewaar_herhaling():
+    try:
+        opslag.schrijf("herhaling.json", st.session_state.herhaling)
+    except Exception as e:
+        print(f"Herhaling niet bewaard: {e}", file=sys.stderr)
+
+
+def app_link():
+    """De persoonlijke link naar de app (zonder wachtwoord), of het gewone adres."""
+    try:
+        basis = str(st.context.url).split("?")[0].rstrip("/")
+    except Exception:
+        basis = ""
+    basis = basis or "https://wiskunde-bijles-dochter.streamlit.app"
+    if "localhost" in basis or "127.0.0.1" in basis:
+        basis = "https://wiskunde-bijles-dochter.streamlit.app"
+    return f"{basis}/?k={link_code()}" if link_code() else basis
+
+
 def melding(tekst, icoon="✅"):
     """Toont een melding, ook als de pagina meteen daarna herladen wordt."""
     st.session_state.setdefault("meldingen", []).append((tekst, icoon))
@@ -512,6 +554,7 @@ groei_data = st.session_state.groei
 HOOFDMENU = ["💬 Chat", "📚 Gesprekken", "📒 Schrift", "🧰 Meer"]
 MEER = [
     "📖 Hoe werkt het? (Handleiding)",
+    "🔁 Herhaling & herinneringen",
     "🎯 Adaptieve Foutenbank-toets",
     "📈 Permanente Groei- & Methodiek-analyse",
     "Functies & Grafieken (Rechten / Parabolen)",
@@ -551,6 +594,9 @@ with st.sidebar:
     st.markdown(f"**Behandelde onderwerpen:** {len(groei_data.get('topics_covered', []))}")
     st.markdown(f"**Sterke punten:** {len(groei_data.get('strong_points', []))}")
     st.markdown(f"**Aandachtspunten:** {len(groei_data.get('weak_points', []))}")
+    _h = lees_herhaling()
+    _n = len(hh.te_herhalen(_h["kaarten"], nu().date(), _h["eigen"]))
+    st.markdown(f"**🔁 Vandaag te herhalen:** {_n} kaart{'en' if _n != 1 else ''}")
 
 
 def toon_bericht(m):
@@ -581,6 +627,138 @@ def profiel_gegevens():
     except Exception:
         index = []
     return schrift, index
+
+
+# ---------------------------------------------------------------- opwarmer (oude leerstof eerst)
+def opwarmer_nodig():
+    if st.session_state.get("opw_extra"):
+        return True
+    if st.session_state.get("opwarmer_klaar"):
+        return False
+    laatst = lees_herhaling().get("laatste_opwarmer")
+    if laatst:
+        from datetime import datetime, timedelta
+        try:
+            if nu() - datetime.fromisoformat(laatst) < timedelta(hours=OPWARMER_PAUZE_UUR):
+                st.session_state.opwarmer_klaar = True
+                return False
+        except Exception:
+            pass
+    return True
+
+
+def _volgende_kaart(o):
+    o.update({"i": o["i"] + 1, "opgave": None, "fase": "vraag", "pogingen": 0, "bijna": False, "boodschap": None})
+
+
+def _noteer(kaart_id, goed, vandaag, o):
+    h = lees_herhaling()
+    hh.werk_bij(h["kaarten"], kaart_id, goed, vandaag)
+    if goed:
+        o["juist"] += 1
+    if o["i"] + 1 >= len(o["ids"]):  # laatste kaart: opwarmer is klaar
+        h["laatste_opwarmer"] = nu().isoformat(timespec="seconds")
+        h["log"] = ([{"datum": nu().strftime("%Y-%m-%d %H:%M"), "juist": o["juist"], "aantal": len(o["ids"])}]
+                    + h.get("log", []))[:60]
+    bewaar_herhaling()
+    _volgende_kaart(o)
+
+
+def toon_opwarmer(vandaag):
+    import random
+    from datetime import timedelta
+    h = lees_herhaling()
+    o = st.session_state.get("opw")
+    if o is None:
+        voorrang = None
+        binnenkort = sorted((t for t in lees_lijst("toetsen.json")
+                             if vandaag.isoformat() <= t.get("datum", "") <= (vandaag + timedelta(days=7)).isoformat()),
+                            key=lambda t: t["datum"])
+        for t in binnenkort:
+            voorrang = hh.groep_voor_toets(t.get("onderwerp"))
+            if voorrang:
+                break
+        ids = hh.kies_opwarmer(h["kaarten"], vandaag, OPWARMER_AANTAL, voorrang, h["eigen"])
+        o = st.session_state.opw = {"ids": ids, "i": 0, "opgave": None, "fase": "vraag", "pogingen": 0,
+                                    "bijna": False, "boodschap": None, "juist": 0}
+    kaarten = {k["id"]: k for k in hh.alle_kaarten(h["eigen"])}
+    n = len(o["ids"])
+
+    st.markdown("#### 🔥 Opwarmer: eerst even oude leerstof")
+    if o["i"] >= n:
+        st.success(f"Klaar met de opwarmer! {o['juist']} van de {n} meteen juist. "
+                   "Wat je moeilijk vond, komt morgen terug; wat goed ging, pas later.")
+        if st.button("💬 Verder naar de bijles", type="primary", width="stretch"):
+            st.session_state.opwarmer_klaar = True
+            st.session_state.pop("opw_extra", None)
+            st.session_state.pop("opw", None)
+            st.rerun()
+        return
+
+    st.caption("Eerst een paar korte vragen over wat je vroeger leerde. Pak pen en papier. Daarna kan je verder.")
+    st.progress(o["i"] / n, text=f"Vraag {o['i'] + 1} van {n}")
+    kaart = kaarten.get(o["ids"][o["i"]])
+    if kaart is None:  # bv. een eigen kaart die intussen gewist is
+        _volgende_kaart(o)
+        st.rerun()
+
+    with st.container(border=True):
+        st.caption(f"{kaart['groep']} · {kaart['titel']}")
+        if kaart["soort"] == "reken":
+            if o["opgave"] is None:
+                o["opgave"] = hh.maak_opgave(kaart, random.random())
+            op = o["opgave"]
+            st.markdown(f"**{op['intro']}**")
+            st.latex(op["tex"])
+            if o["fase"] == "vraag":
+                with st.form(f"opw_{o['i']}_{o['pogingen']}"):
+                    antw = st.text_input("Jouw antwoord",
+                                         placeholder="bv. 7" if op.get("exponent") else "bv. -3/4 (breuk met /)")
+                    controleer = st.form_submit_button("Controleer", type="primary")
+                if o.get("boodschap"):
+                    soort, tekst = o["boodschap"]
+                    getattr(st, soort)(tekst)
+                if controleer:
+                    status, tekst = hh.kijk_na(op, antw)
+                    if status == "juist":
+                        goed = True if not (o["pogingen"] or o["bijna"]) else (None if not o["pogingen"] else False)
+                        melding(tekst if goed else "Juist, goed doorgezet!", "🎉" if goed else "👍")
+                        _noteer(kaart["id"], goed, vandaag, o)
+                    elif status == "bijna":
+                        o["bijna"] = True
+                        o["boodschap"] = ("warning", tekst)
+                    elif status == "onleesbaar":
+                        o["boodschap"] = ("info", tekst)
+                    else:
+                        o["pogingen"] += 1
+                        if o["pogingen"] == 1:
+                            o["boodschap"] = ("error", "Nog niet juist. 💡 Tip: " + kaart.get("tip", "kijk goed naar de regel."))
+                        else:
+                            o["fase"] = "uitleg"
+                    st.rerun()
+            else:  # twee keer fout: uitleg tonen
+                st.error(f"Het juiste antwoord is ${hh.tex_breuk(op['antwoord'])}$.")
+                st.markdown(op["uitleg"])
+                st.caption("Geen probleem: deze kaart komt morgen terug. Schrijf de regel even op je blad.")
+                if st.button("Volgende ➜", type="primary"):
+                    _noteer(kaart["id"], False, vandaag, o)
+                    st.rerun()
+        else:
+            st.markdown(f"**{kaart['vraag']}**")
+            if o["fase"] == "vraag":
+                st.caption("Zeg of schrijf eerst zelf het antwoord. Pas daarna kijken!")
+                if st.button("👀 Toon het antwoord", type="primary"):
+                    o["fase"] = "antwoord"
+                    st.rerun()
+            else:
+                st.success(kaart["antwoord"])
+                c1, c2 = st.columns(2)
+                if c1.button("✅ Ik wist het", width="stretch"):
+                    _noteer(kaart["id"], True, vandaag, o)
+                    st.rerun()
+                if c2.button("❌ Nog niet (goed)", width="stretch"):
+                    _noteer(kaart["id"], False, vandaag, o)
+                    st.rerun()
 
 
 # ---------------------------------------------------------------- hoofdscherm
@@ -656,6 +834,7 @@ elif current_topic == "📖 Hoe werkt het? (Handleiding)":
         "- **Vraag stellen:** typ onderaan in het tekstvak.\n"
         "- **Foto of PDF toevoegen:** tik op het ＋-knopje links in het tekstvak, kies je foto en typ erbij wat je wil weten.\n"
         "- **Terugkijken:** al je gesprekken staan bij *📚 Mijn gesprekken*, de uitleg van opgeloste oefeningen bij *📒 Mijn uitleg-schrift*.\n"
+        "- **Opwarmer:** elke studiesessie begint met 3 korte vragen over oude leerstof. Zo blijven de rekenregels hangen.\n"
         "- **Vastgelopen?** Tik op *🆘 Ik zit echt vast*: dan doet de bijlesleraar een gelijkaardige oefening voor.\n"
         "- **Toets op komst?** Tik in een nieuw gesprek op *📅 Ik heb een toets*.\n"
         "- **Opnieuw beginnen:** *➕ Nieuw gesprek* onder de chat. Je oude gesprek blijft bewaard.\n\n"
@@ -663,19 +842,103 @@ elif current_topic == "📖 Hoe werkt het? (Handleiding)":
     )
     if link_code():
         st.subheader("📲 Openen zonder wachtwoord")
-        try:
-            basis = str(st.context.url).split("?")[0].rstrip("/")
-        except Exception:
-            basis = ""
-        basis = basis or "https://wiskunde-bijles-dochter.streamlit.app"
         st.markdown("Met deze persoonlijke link kom je meteen binnen. Zet hem op het beginscherm van je telefoon:")
-        st.code(f"{basis}/?k={link_code()}", language=None)
+        st.code(app_link(), language=None)
         st.markdown(
             "1. Kopieer de link (knopje rechts) en open hem in **Chrome**.\n"
             "2. Tik op **⋮** rechtsboven → **Toevoegen aan startscherm**.\n\n"
             "Deel deze link met niemand: wie hem heeft, kan binnen. Lekt hij toch uit, "
             "laat papa dan het wachtwoord veranderen; dan werkt de oude link niet meer."
         )
+
+elif current_topic == "🔁 Herhaling & herinneringen":
+    from datetime import time as dtijd
+    st.header("🔁 Herhaling & herinneringen")
+    st.markdown(
+        "Een regel die je net geleerd hebt, lukt meteen, maar een week later ben je hem vaak vergeten. "
+        "Daarom begint elke studiesessie met een **opwarmer**: 3 korte vragen over oude leerstof "
+        "(herhaling 1ste jaar en de rekenregels voor machten). Wat je moeilijk vindt, komt snel terug; "
+        "wat goed gaat, steeds later."
+    )
+    h = lees_herhaling()
+    vandaag = nu().date()
+    alle = hh.alle_kaarten(h["eigen"])
+    vk = h["kaarten"]
+    vast = sum(1 for k in alle if (vk.get(k["id"]) or {}).get("doos", 0) >= 4)
+    bezig = sum(1 for k in alle if 0 < (vk.get(k["id"]) or {}).get("doos", 0) < 4)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Vandaag", len(hh.te_herhalen(vk, vandaag, h["eigen"])), help="kaarten die vandaag terugkomen")
+    c2.metric("Zit vast", vast, help="al een paar keer na elkaar juist")
+    c3.metric("Bezig", bezig)
+    c4.metric("Nog nieuw", len(alle) - vast - bezig)
+
+    if st.button("🔥 Extra herhaalrondje", type="primary"):
+        st.session_state.opw_extra = True
+        st.session_state.pop("opw", None)
+        st.session_state.naar_chat = True
+        st.rerun()
+
+    for groep in (hh.MACHTEN, hh.H1, hh.EIGEN):
+        rijen = []
+        for k in alle:
+            if k["groep"] != groep:
+                continue
+            v = vk.get(k["id"]) or {}
+            doos = int(v.get("doos", 0))
+            rijen.append({
+                "Kaart": ("🧮 " if k["soort"] == "reken" else "📝 ") + k["titel"],
+                "Niveau": "●" * doos + "○" * (hh.MAX_DOOS - doos) if v else "nieuw",
+                "Volgende keer": v.get("volgende", "—"),
+                "Fout": v.get("fout", 0),
+            })
+        if rijen:
+            with st.expander(f"{groep} ({len(rijen)} kaarten)"):
+                st.dataframe(rijen, hide_index=True, width="stretch")
+                st.caption("🧮 = som (de app kijkt na) · 📝 = regel (theorie, zelf eerlijk beoordelen)")
+
+    st.subheader("📝 Eigen kaart toevoegen")
+    st.caption("Bv. een bewijs uit de les of een regel uit je bundeltje. Vraag links, antwoord rechts: "
+               "net zoals theorie in 2 kolommen. Wiskundetekens mag je typen als a^2 of tussen $-tekens.")
+    with st.form("eigen_kaart", clear_on_submit=True):
+        vraag_k = st.text_input("Vraag (bv. 'Bewijs dat a⁰ = 1')")
+        antw_k = st.text_area("Antwoord")
+        if st.form_submit_button("Kaart bewaren"):
+            if vraag_k.strip() and antw_k.strip():
+                h["eigen"].append({"id": "eigen-" + nu().strftime("%Y%m%d%H%M%S"), "titel": vraag_k.strip()[:50],
+                                   "vraag": vraag_k.strip(), "antwoord": antw_k.strip()})
+                bewaar_herhaling()
+                melding("Kaart bewaard! Ze komt in een volgende opwarmer.", "📝")
+                st.rerun()
+            else:
+                st.warning("Vul zowel de vraag als het antwoord in.")
+    for i, e in enumerate(h["eigen"]):
+        c1, c2 = st.columns([5, 1], vertical_alignment="center")
+        c1.markdown(f"• {e.get('vraag', '')}")
+        if c2.button("🗑️", key=f"weg_eigen_{e.get('id', i)}", help="Kaart verwijderen"):
+            h["eigen"].pop(i)
+            h["kaarten"].pop(e.get("id"), None)
+            bewaar_herhaling()
+            st.rerun()
+
+    st.subheader("⏰ Herinnering op je telefoon")
+    st.markdown("Kies vaste momenten om te studeren. Je krijgt een agendabestand: open het op je telefoon en "
+                "kies **Toevoegen aan agenda**. Dan krijg je op die momenten een melding, met de link naar de app.")
+    dagen = st.multiselect("Op welke dagen?", list(hh.DAGCODES), default=["maandag", "woensdag", "zondag"])
+    c1, c2 = st.columns(2)
+    tijdstip = c1.time_input("Hoe laat?", value=dtijd(18, 0), step=900)
+    duur = c2.selectbox("Hoe lang?", [15, 20, 30, 45], index=1, format_func=lambda m: f"{m} minuten")
+    if dagen:
+        st.download_button("📅 Download herinneringen (agenda)",
+                           hh.maak_ics(dagen, tijdstip.hour, tijdstip.minute, duur, app_link(), vandaag),
+                           file_name="wiskunde-herhaling.ics", mime="text/calendar", type="primary")
+        st.caption("iPhone: open het bestand in Safari → Voeg alles toe. Android: open het met je "
+                   "Agenda-app (of importeer het in Google Agenda via de computer). "
+                   "Herinneringen lopen tot het einde van het schooljaar.")
+
+    if h.get("log"):
+        st.subheader("📊 Laatste opwarmers")
+        st.dataframe([{"Wanneer": r["datum"], "Meteen juist": f"{r['juist']} van {r['aantal']}"}
+                      for r in h["log"][:10]], hide_index=True, width="stretch")
 
 elif current_topic == "🎯 Adaptieve Foutenbank-toets":
     st.header("🎯 Adaptieve Foutenbank-toets")
@@ -831,6 +1094,11 @@ else:
     schrift = lees_lijst("schrift.json")
     onderwerpen_recent = list(dict.fromkeys(n.get("onderwerp") for n in schrift if n.get("onderwerp")))[:5]
     actie = None  # tekst die via een knop verstuurd wordt, alsof ze hem zelf typte
+
+    # --- eerst de opwarmer: oude leerstof herhalen voor ze aan iets nieuws begint
+    if opwarmer_nodig():
+        toon_opwarmer(vandaag)
+        st.stop()
 
     # --- vooruitgang: kort en niet kinderachtig
     if schrift:

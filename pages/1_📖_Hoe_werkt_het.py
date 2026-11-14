@@ -37,6 +37,15 @@ Bovenaan in de app tik je op **🧰 Meer** en kies je het onderwerp waar je mee 
 
 ---
 
+### 🔥 Eerst de opwarmer
+Elke keer dat je begint te studeren, krijg je eerst **3 korte vragen over oude leerstof**: de herhaling van het 1ste jaar (breuken, negatieve getallen, volgorde van bewerkingen) en de rekenregels voor machten.
+* **Sommen** kijkt de app zelf na. Let op: een breuk die je nog kan vereenvoudigen, is nog niet af!
+* **Regels** zeg of schrijf je eerst zelf; daarna tik je op *Toon het antwoord* en zeg je eerlijk of je het wist.
+* Wat je moeilijk vindt, komt **morgen** terug. Wat goed gaat, komt pas na een paar dagen of weken terug.
+* Onder **🧰 Meer → 🔁 Herhaling & herinneringen** zie je hoe ver je staat, voeg je eigen kaarten toe (bv. bewijzen uit de les) en download je **herinneringen voor je agenda**, zodat je telefoon je op vaste momenten laat weten dat het tijd is om te studeren.
+
+---
+
 ### 🆘 Vast? Toets op komst?
 * **Ik zit echt vast:** tik op de knop onder de chat. De bijlesleraar doet dan een gelijkaardige oefening met andere getallen helemaal voor, en daarna probeer jij je eigen oefening opnieuw.
 * **Ik heb een toets:** tik in een nieuw gesprek op *📅 Ik heb een toets*, vul het onderwerp en de datum in, en je krijgt een kort oefenplan. Tot de toets zie je bovenaan een knop *Oefen nu*.
