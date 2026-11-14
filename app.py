@@ -77,7 +77,7 @@ def link_code():
 # Codewoord voor papa: inloggen zonder opwarmer (om de app te bekijken of te testen).
 # Alleen de 'vingerafdruk' (hash) staat hier, niet het woord zelf. Een ander woord kiezen?
 # Zet OUDER_CODE = "jouwwoord" in de Secrets; dat gaat dan voor.
-OUDER_HASH = "4c518fae66f4a805011328795a3a1e6d75e606c2cb3e6f1ee4ea76f2ac1a47ea"
+OUDER_HASH = "a9774ad2b21fa1dd19209e7c53d00fffeaa66d04e1b3803b03fb176d7b2aa4c4"
 
 
 def is_ouder_code(invoer):
